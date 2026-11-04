@@ -1,25 +1,34 @@
-﻿# Repository Guidelines
+# Repository Guidelines
 
-## Project Structure & Module Organization
+## Approved architecture
 
-The working directory currently contains no source files, tests, assets, or Git metadata. As the project is added, keep application code in a clearly named source directory (such as `src/`), automated tests in `tests/` or alongside the modules they cover, and static files in `assets/` or `public/`. Keep documentation and configuration at the repository root when they apply across the project. Update this guide when the actual layout is established.
+- MemeProof is a NEAR accountability app; development and deployment target **NEAR testnet only**.
+- Token identity is the pair `(network_id, token_contract_address)`. Never identify a token by ticker alone. The first version uses manual contract-address entry.
+- `apps/web` is the Next.js, React, TypeScript, and Tailwind frontend. `contracts/memeproof-registry` is a separate Rust NEAR contract. `packages/shared` holds frontend-safe shared types.
+- Supabase stores evidence files and searchable application projections. Evidence hashes and opaque references are recorded on-chain. Never put secrets or large/private evidence contents on-chain.
+- AI may assist reviewers, but cannot independently set a final verdict. Deadline expiry alone never marks a commitment failed.
+- Commitment bonds, Trezu, SputnikDAO governance, and NEAR Intents are deferred. Voting eligibility and verification rules must be explicit before those features are built.
+- Do not fake blockchain functionality. Label scaffolding and mock/static content clearly; chain actions require real wallet signatures and testnet transactions.
 
-## Build, Test, and Development Commands
+## Structure
 
-No build system or development commands are defined yet. When adding one, document the canonical install, local-run, test, and build commands here (for example, `npm install`, `npm run dev`, `npm test`, and `npm run build` for a Node-based project). Use the commands declared by the project’s manifests rather than introducing undocumented alternatives.
+- `apps/web/`: Next.js app, UI, and later minimal server routes.
+- `contracts/memeproof-registry/`: Rust contract and contract tests.
+- `packages/shared/`: shared types and validation schemas.
+- `supabase/migrations/`: database migrations when Supabase is introduced.
+- `docs/`: architecture decisions and runbooks.
 
-## Coding Style & Naming Conventions
+## Development commands
 
-Follow the conventions and formatter adopted by each language or framework; keep formatting consistent and run the project formatter before submitting changes. Use descriptive names that reflect a module’s responsibility. Prefer the language’s common naming style (for example, `snake_case` for Python modules and `camelCase` for JavaScript functions), and use consistent casing for filenames within each area.
+From the repository root, use `npm install`, `npm run dev`, `npm run build`, and `npm run lint`. Run the Rust contract tests with `cargo test --manifest-path contracts/memeproof-registry/Cargo.toml`; build with `cargo near build` from the contract directory after installing the NEAR Rust toolchain. See `README.md` for setup details.
 
-## Testing Guidelines
+Use Node.js 20.9 or later, Rust stable matching the pinned near-sdk MSRV, and Windows 10 PowerShell-compatible commands. Keep dependency versions in manifests/lockfiles. Do not add unpinned global tools or undocumented setup steps.
 
-No test framework or coverage target is configured yet. Add tests for new behavior and regression fixes, name test files consistently with the chosen framework, and document the command that runs the full suite. Keep tests deterministic and independent of external services unless those dependencies are explicitly part of the test.
+## Coding and security
 
-## Commit & Pull Request Guidelines
-
-There is no Git history from which to infer commit conventions. Use short, imperative commit subjects (for example, `Add input validation`). Pull requests should explain the change and its motivation, list relevant verification steps, link related issues when available, and include screenshots for user-visible changes.
-
-## Security & Configuration
-
-Do not commit credentials, private keys, or local environment files. Provide safe example configuration with placeholder values, and document required variables without exposing secrets.
+- Keep formatting consistent; use Prettier for TypeScript and `cargo fmt` for Rust.
+- Add deterministic tests for new behavior and regression fixes.
+- Never commit credentials, private keys, `.env` files, wallet seed phrases, or service-role keys. Update `.env.example` with placeholders only.
+- Validate every client input again at trusted boundaries. Enforce contract authorization and duplicate-vote prevention in contract code, not only in the UI.
+- Preserve original commitments and append historical evidence, verification, vote, and dispute records; no silent rewrite or deletion.
+- Do not expose API secrets in `NEXT_PUBLIC_*` variables. Never let AI alone determine verification or status.

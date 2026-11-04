@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  contract:
+    name: Rust contract checks
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install stable Rust with WebAssembly target and rustfmt
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+          components: rustfmt
+
+      - name: Validate Rust formatting
+        run: cargo fmt --manifest-path contracts/memeproof-registry/Cargo.toml -- --check
+
+      - name: Run contract tests
+        run: cargo test --manifest-path contracts/memeproof-registry/Cargo.toml
+
+      - name: Build contract for WebAssembly
+        run: cargo build --manifest-path contracts/memeproof-registry/Cargo.toml --target wasm32-unknown-unknown --release
