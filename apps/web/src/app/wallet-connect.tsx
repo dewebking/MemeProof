@@ -3,6 +3,7 @@
 import { NearConnector } from "@hot-labs/near-connect";
 import Image from "next/image";
 import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 type WalletState =
   "restoring" | "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -50,11 +51,13 @@ function isAccountId(value: unknown): value is string {
 
 export default function WalletConnect() {
   const connectorRef = useRef<NearConnector | null>(null);
+  const accountMenuRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<WalletState>("disconnected");
   const [accountId, setAccountId] = useState<string | null>(null);
   const [wallets, setWallets] = useState<WalletOption[]>([]);
   const [walletsLoading, setWalletsLoading] = useState(true);
   const [selectorOpen, setSelectorOpen] = useState(false);
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -149,6 +152,36 @@ export default function WalletConnect() {
     };
   }, []);
 
+  useEffect(() => {
+    if (!selectorOpen) return;
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && !["restoring", "connecting", "disconnecting"].includes(state)) {
+        setSelectorOpen(false);
+        setError(null);
+      }
+    };
+    document.addEventListener("keydown", closeOnEscape);
+    return () => document.removeEventListener("keydown", closeOnEscape);
+  }, [selectorOpen, state]);
+
+  useEffect(() => {
+    if (!accountMenuOpen) return;
+    const closeMenu = (event: KeyboardEvent) => {
+      if (event.key === "Escape") setAccountMenuOpen(false);
+    };
+    const closeOutside = (event: PointerEvent) => {
+      if (event.target instanceof Node && !accountMenuRef.current?.contains(event.target)) {
+        setAccountMenuOpen(false);
+      }
+    };
+    document.addEventListener("keydown", closeMenu);
+    document.addEventListener("pointerdown", closeOutside);
+    return () => {
+      document.removeEventListener("keydown", closeMenu);
+      document.removeEventListener("pointerdown", closeOutside);
+    };
+  }, [accountMenuOpen]);
+
   async function connect(wallet: WalletOption) {
     const connector = connectorRef.current;
     if (!connector || !TESTNET_NEAR_WALLETS.has(wallet.id)) return;
@@ -221,12 +254,32 @@ export default function WalletConnect() {
     state === "disconnecting";
 
   return (
-    <div className="flex flex-col items-end gap-2">
+    <div ref={accountMenuRef} className="wallet-control flex flex-col items-end gap-2">
       <span className="rounded-full border border-emerald-400/30 px-3 py-1 text-xs text-emerald-300">
         NEAR TESTNET
       </span>
       {accountId ? (
-        <div className="flex flex-wrap items-center justify-end gap-3 text-sm">
+        <>
+        <button
+          type="button"
+          className="mobile-account-trigger"
+          aria-haspopup="menu"
+          aria-expanded={accountMenuOpen}
+          aria-controls="wallet-account-menu"
+          onClick={() => setAccountMenuOpen((current) => !current)}
+          title={accountId}
+        >
+          <span className="mobile-account-mark" aria-hidden="true">{accountId.slice(0, 1).toUpperCase()}</span>
+          <span className="mobile-account-short">{accountId.length > 17 ? `${accountId.slice(0, 8)}…${accountId.slice(-5)}` : accountId}</span>
+          <span className="mobile-account-chevron" aria-hidden="true">⌄</span>
+        </button>
+        {accountMenuOpen && <div className="mobile-account-menu" id="wallet-account-menu" role="menu" aria-label="Connected NEAR account">
+          <span className="mobile-account-label">CONNECTED ACCOUNT</span>
+          <b className="mobile-account-id" title={accountId}>{accountId}</b>
+          <button type="button" role="menuitem" disabled={busy} onClick={() => { setAccountMenuOpen(false); void switchWallet(); }}>Switch wallet</button>
+          <button type="button" role="menuitem" disabled={busy} onClick={() => { setAccountMenuOpen(false); void disconnect(); }}>{state === "disconnecting" ? "Disconnecting…" : "Disconnect"}</button>
+        </div>}
+        <div className="connected-actions flex flex-wrap items-center justify-end gap-3 text-sm">
           <span
             className="max-w-56 truncate text-emerald-200"
             title={accountId}
@@ -250,6 +303,7 @@ export default function WalletConnect() {
             {state === "disconnecting" ? "Disconnecting..." : "Disconnect"}
           </button>
         </div>
+        </>
       ) : (
         <button
           type="button"
@@ -258,13 +312,16 @@ export default function WalletConnect() {
             setSelectorOpen(true);
           }}
           disabled={busy}
+          aria-busy={busy}
           className="rounded-md bg-emerald-400 px-4 py-2 text-sm font-semibold text-zinc-950 transition hover:bg-emerald-300 disabled:cursor-wait disabled:opacity-60"
         >
-          {state === "restoring"
+          {busy && <span className="wallet-spinner" aria-hidden="true" />}
+          <span className="desktop-wallet-label">{state === "restoring"
             ? "Restoring wallet..."
             : state === "connecting"
               ? "Connecting..."
-              : "Connect NEAR Wallet"}
+              : "Connect NEAR Wallet"}</span>
+          <span className="mobile-wallet-label">{busy ? "Connecting…" : "Connect wallet"}</span>
         </button>
       )}
       {state === "connected" && (
@@ -277,7 +334,7 @@ export default function WalletConnect() {
           {error}
         </p>
       )}
-      {selectorOpen && !accountId && (
+      {selectorOpen && !accountId && createPortal((
         <div
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4"
           onMouseDown={(event) => {
@@ -314,8 +371,8 @@ export default function WalletConnect() {
               </button>
             </div>
             {walletsLoading ? (
-              <p className="py-6 text-sm text-zinc-300">
-                Loading supported wallets...
+              <p className="wallet-loading py-6 text-sm text-zinc-300" role="status">
+                <span className="wallet-spinner" aria-hidden="true" /> Loading supported wallets...
               </p>
             ) : wallets.length > 0 ? (
               <ul className="flex flex-col gap-2">
@@ -344,7 +401,8 @@ export default function WalletConnect() {
                         </span>
                       </span>
                       {state === "connecting" && (
-                        <span className="text-xs text-emerald-300">
+                        <span className="wallet-connecting text-xs text-emerald-300" role="status">
+                          <span className="wallet-spinner" aria-hidden="true" />
                           Connecting...
                         </span>
                       )}
@@ -364,7 +422,7 @@ export default function WalletConnect() {
             )}
           </section>
         </div>
-      )}
+      ), document.body)}
     </div>
   );
 }
