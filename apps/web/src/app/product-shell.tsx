@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState, type ReactNode } from "react";
 import WalletConnect from "./wallet-connect";
 import { Badge, Button, Card } from "./ui";
+import DiscoverTokens from "./discover-tokens";
 
 const nav = [
   ["/overview", "Overview", "O"], ["/discover", "Discover", "D"],
@@ -74,7 +75,6 @@ export function ProductPage({ page }: { page: string }) {
   const [step, setStep] = useState(1);
   const [message, setMessage] = useState("");
   const [fileName, setFileName] = useState("");
-  const [filter, setFilter] = useState("All statuses");
   const [saved, setSaved] = useState(false);
 
   if (page === "overview") return <>
@@ -88,7 +88,7 @@ export function ProductPage({ page }: { page: string }) {
     <div className="overview-grid dashboard-lower"><section className="panel"><div className="panel-heading"><div><span className="eyebrow">LATEST RECORDS</span><h2>Recent activity</h2><p>Every event will include its source and transaction reference.</p></div><Link href="/activity">Activity log ↗</Link></div><div className="timeline-empty"><span className="timeline-spine"/><div className="timeline-node">·</div><div><b>Awaiting the first registry event</b><p>Evidence submissions, verification checks and disputes will appear here in chronological order.</p></div></div></section><section className="panel"><div className="panel-heading"><div><span className="eyebrow">CREATOR VIEW</span><h2>My commitments</h2><p>Your published accountability record.</p></div><Link href="/my-commitments">Open ↗</Link></div><EmptyState title="Your record is empty" text="Connect a NEAR testnet wallet and publish a measurable commitment when registry actions are available." href="/create-commitment" action="Draft a commitment" /></section></div>
   </>;
 
-  if (page === "discover") return <><PageHeading eyebrow="PUBLIC REGISTRY" title="Discover token passports" description="Explore token accountability records. Token data will appear here when registration is available." /><DemoBanner /><section className="panel discover-panel"><div className="discover-controls"><label className="search-field"><span>⌕</span><input value={query} onChange={e => setQuery(e.target.value)} placeholder="Search token name or contract address" aria-label="Search tokens" /></label><select value={filter} onChange={e => setFilter(e.target.value)} aria-label="Filter by status"><option>All statuses</option><option>Verified</option><option>Evidence submitted</option><option>Disputed</option></select></div><div className="table-header"><span>TOKEN</span><span>CREATOR</span><span>COMMITMENTS</span><span>ACCOUNTABILITY</span><span /></div><EmptyState title={query ? `No results for “${query}”` : "No registered tokens yet"} text="The public passport directory is waiting for the NEAR testnet registry to launch." /></section></>;
+  if (page === "discover") return <><PageHeading eyebrow="PUBLIC REGISTRY" title="Discover token passports" description="Explore token data from Meme.Cooking. Passport commitments and verification are not available from this source." /><DiscoverTokens query={query} setQuery={setQuery} /></>;
 
   if (page === "create-commitment") return <><PageHeading eyebrow="NEW COMMITMENT" title="Make a promise measurable" description="Create a clear commitment that can be understood, evidenced and reviewed." /><div className="form-layout"><div className="form-main panel"><div className="stepper">{[1,2,3].map(n => <div key={n} className={`stepper-item ${step >= n ? "stepper-current" : ""}`}><span>{step > n ? "✓" : `0${n}`}</span><b>{["Commitment", "Criteria & deadline", "Review"][n-1]}</b></div>)}</div><form onSubmit={e => { e.preventDefault(); if (step < 3) setStep(step+1); else setMessage("Draft saved in this session. Wallet-signed submission is not available yet."); }}>
     {step === 1 && <><h2>What are you committing to?</h2><p className="form-hint">Write a specific promise that the community can understand.</p><label className="field-label">Token contract address<input required placeholder="e.g. token.example.testnet" /></label><small className="field-caption">Token identity uses the NEAR testnet and contract address.</small><label className="field-label">Commitment title<input required minLength={8} placeholder="e.g. Publish a monthly treasury report" /></label><label className="field-label">Commitment description<textarea required rows={4} placeholder="Describe what will be delivered and who it benefits." /></label></>}
