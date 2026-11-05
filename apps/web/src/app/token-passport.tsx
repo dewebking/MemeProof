@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { Badge, Button, Card } from "./ui";
 import TokenImage from "./token-image";
+import PassportMarketOverview from "./passport-market-overview";
 
 type Token = Record<string, unknown>;
 const first = (token: Token, ...keys: string[]): unknown => keys.map(key => token[key]).find(value => value !== undefined && value !== null && value !== "");
@@ -103,6 +104,8 @@ export default function TokenPassport({ id }: { id: string }) {
     <section className="passport-section"><div className="passport-section-heading"><div><span className="eyebrow">PROJECT</span><h2>Overview</h2></div></div><Card className="passport-overview">
       <div className="passport-overview-content"><p>{display(first(token, "description")) ?? "No project description is available."}</p><div className="passport-links">{links.filter(([, raw]) => Boolean(raw)).map(([label, raw]) => <SafeLink key={label} label={label} raw={raw} />)}</div></div>
     </Card></section>
+
+    <PassportMarketOverview memeId={id} />
 
     <section className="passport-section"><div className="passport-section-heading"><div><span className="eyebrow">MEME.COOKING LAUNCH DATA</span><h2>Token economics</h2></div></div><div className="passport-metrics">
       <Metric label="Total supply" value={exactAmount(supplyRaw, decimals)} exact={display(supplyRaw)} denomination={display(decimals) ? `${display(decimals)} token decimals` : undefined} />
