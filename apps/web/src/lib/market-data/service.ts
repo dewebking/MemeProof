@@ -1,16 +1,16 @@
 import "server-only";
-import { getMeme, type MemeCookingToken } from "@/lib/meme-cooking";
-import { inspectMemeTokenAddress, selectMarketProvider } from "./normalize";
+import { getMeme } from "@/lib/meme-cooking";
+import {
+  getMemeTokenContractAddress,
+  inspectMemeTokenAddress,
+  selectMarketProvider,
+} from "./normalize";
 import {
   discoverGeckoNearNetwork,
   getGeckoMarketData,
 } from "./providers/geckoterminal";
 import { getDexScreenerMarketData } from "./providers/dex-screener";
 import type { MarketDataResult } from "./types";
-
-function tokenAddress(token: MemeCookingToken): unknown {
-  return token.token_id;
-}
 
 function unavailable(
   memeId: string,
@@ -38,8 +38,15 @@ export async function getMemeMarketData(
   memeId: string,
 ): Promise<MarketDataResult> {
   const token = await getMeme(memeId);
+  return getMarketDataForToken(memeId, token);
+}
+
+export async function getMarketDataForToken(
+  memeId: string,
+  token: Record<string, unknown>,
+): Promise<MarketDataResult> {
   const fetchedAt = new Date().toISOString();
-  const rawAddress = tokenAddress(token);
+  const rawAddress = getMemeTokenContractAddress(token);
 
   if (typeof rawAddress !== "string" || !rawAddress.trim()) {
     return unavailable(memeId, null, "missing_token_id", fetchedAt);
@@ -81,6 +88,9 @@ export async function getMemeMarketData(
       marketData: { ...selected.marketData, fetchedAt: completedAt },
       providers,
       fetchedAt: completedAt,
+      marketState: "available",
+      isStale: false,
+      lastSuccessfulRefreshAt: completedAt,
     };
   }
   const hadProviderError =

@@ -93,6 +93,10 @@ export function inspectMemeTokenAddress(
     : { status: "invalid", address };
 }
 
+export function getMemeTokenContractAddress(record: unknown): unknown {
+  return isRecord(record) ? record.token_id : undefined;
+}
+
 export function normalizeDexPairs(
   payload: unknown,
   address: string,

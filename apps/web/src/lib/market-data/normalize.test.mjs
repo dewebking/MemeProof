@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   inspectMemeTokenAddress,
   isValidNearAccountId,
+  getMemeTokenContractAddress,
   normalizeDexPairs,
   normalizeGeckoPools,
   selectMarketProvider,
@@ -137,6 +138,20 @@ test("missing market fields stay null and absent token contract IDs fail validat
     status: "invalid",
     address: "NOT AN ACCOUNT",
   });
+  assert.equal(
+    getMemeTokenContractAddress({
+      is_finalized: true,
+      token_id: null,
+      pool_id: null,
+      deposit_token_id: "wrap.near",
+      contract_id: address,
+    }),
+    null,
+  );
+  assert.equal(
+    getMemeTokenContractAddress({ contract_id: address }),
+    undefined,
+  );
 });
 
 test("returns no match for empty or invalid provider response", () => {

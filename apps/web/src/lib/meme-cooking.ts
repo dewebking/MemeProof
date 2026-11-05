@@ -31,21 +31,38 @@ function isToken(value: unknown): value is MemeCookingToken {
   );
 }
 
-function normalizeTokens(payload: unknown): MemeCookingToken[] {
-  if (Array.isArray(payload) && payload.every(isToken)) return payload;
+function normalizeMemePage(payload: unknown): { records: MemeCookingToken[]; next: string | null } {
+  if (Array.isArray(payload) && payload.every(isToken)) return { records: payload, next: null };
   if (isRecord(payload)) {
     for (const key of ["data", "memes", "items", "results"]) {
       const value = payload[key];
-      if (Array.isArray(value) && value.every(isToken)) return value;
+      if (!Array.isArray(value) || !value.every(isToken)) continue;
+      const links = isRecord(payload.links) ? payload.links : {};
+      const pagination = isRecord(payload.pagination) ? payload.pagination : {};
+      const nextValue = links.next ?? pagination.next ?? payload.next;
+      return { records: value, next: typeof nextValue === "string" && nextValue.trim() ? nextValue : null };
     }
   }
   throw new MemeCookingApiError("Meme.Cooking returned an unexpected token response.", 502);
 }
 
-export async function getMemes(): Promise<MemeCookingToken[]> {
+function safeMemePageUrl(value: string): string {
+  let url: URL;
+  try {
+    url = new URL(value, `${API_BASE_URL}/meme`);
+  } catch {
+    throw new MemeCookingApiError("Meme.Cooking returned an invalid pagination link.", 502);
+  }
+  if (url.origin !== API_BASE_URL || url.pathname !== "/meme") {
+    throw new MemeCookingApiError("Meme.Cooking returned an unsafe pagination link.", 502);
+  }
+  return url.href;
+}
+
+async function fetchMemePage(url: string): Promise<unknown> {
   let response: Response;
   try {
-    response = await fetch(`${API_BASE_URL}/meme`, {
+    response = await fetch(url, {
       headers: { accept: "application/json" },
       next: { revalidate: CACHE_SECONDS },
       signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
@@ -56,21 +73,37 @@ export async function getMemes(): Promise<MemeCookingToken[]> {
     }
     throw new MemeCookingApiError("Meme.Cooking could not be reached.", 502);
   }
-
   if (!response.ok) {
-    throw new MemeCookingApiError(
-      `Meme.Cooking returned HTTP ${response.status}.`,
-      response.status === 429 ? 503 : 502,
-    );
+    throw new MemeCookingApiError(`Meme.Cooking returned HTTP ${response.status}.`, response.status === 429 ? 503 : 502);
   }
-
-  let payload: unknown;
   try {
-    payload = await response.json();
+    return await response.json();
   } catch {
     throw new MemeCookingApiError("Meme.Cooking returned invalid JSON.", 502);
   }
-  return normalizeTokens(payload);
+}
+
+export async function getMemes(): Promise<MemeCookingToken[]> {
+  const pageLimit = 100;
+  const visited = new Set<string>();
+  const byId = new Map<string, MemeCookingToken>();
+  let pageUrl: string | null = `${API_BASE_URL}/meme`;
+  let pages = 0;
+  while (pageUrl) {
+    pageUrl = safeMemePageUrl(pageUrl);
+    if (visited.has(pageUrl)) throw new MemeCookingApiError("Meme.Cooking pagination loop detected.", 502);
+    if (pages >= pageLimit) throw new MemeCookingApiError("Meme.Cooking pagination exceeded the safe page limit.", 502);
+    visited.add(pageUrl);
+    const payload = await fetchMemePage(pageUrl);
+    const page = normalizeMemePage(payload);
+    for (const token of page.records) {
+      const id = token.meme_id ?? token.id;
+      if (id !== undefined && id !== null) byId.set(String(id), token);
+    }
+    pageUrl = page.next ? safeMemePageUrl(page.next) : null;
+    pages += 1;
+  }
+  return [...byId.values()];
 }
 
 export async function getMeme(id: string): Promise<MemeCookingToken> {

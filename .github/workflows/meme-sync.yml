@@ -1,0 +1,25 @@
+name: Meme.Cooking and market-data refresh
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Call protected refresh endpoint
+        env:
+          MEMEPROOF_BASE_URL: ${{ secrets.MEMEPROOF_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+        run: |
+          test -n "$MEMEPROOF_BASE_URL"
+          test -n "$CRON_SECRET"
+          curl --fail-with-body --silent --show-error \
+            --max-time 75 \
+            -X POST "${MEMEPROOF_BASE_URL%/}/api/cron/sync" \
+            -H "Authorization: Bearer ${CRON_SECRET}" \
+            -H "Content-Type: application/json" \
+            --data '{"trigger":"scheduled"}'

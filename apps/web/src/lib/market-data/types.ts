@@ -48,6 +48,9 @@ export type MarketDataResult = {
     dexscreener: ProviderState;
   };
   fetchedAt: string;
+  marketState?: "contract_unavailable" | "no_matching_pair" | "provider_unavailable" | "available" | "pending";
+  isStale?: boolean;
+  lastSuccessfulRefreshAt?: string | null;
 };
 
 export type ProviderLookup =

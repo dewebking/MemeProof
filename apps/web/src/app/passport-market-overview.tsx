@@ -30,6 +30,12 @@ function Metric({ label, value }: { label: string; value: string }) {
 }
 
 function unavailableText(result: MarketDataResult): string {
+  if (result.marketState === "pending")
+    return "This token contract is eligible for market lookup. Market data will appear after the next scheduled refresh.";
+  if (result.marketState === "contract_unavailable")
+    return "A token contract address is not available for this launch record.";
+  if (result.marketState === "provider_unavailable")
+    return "Market data providers are temporarily unavailable. Any prior successful snapshot is retained.";
   if (result.reason === "missing_token_id")
     return "This launch record does not include a token contract address, so market data cannot be matched safely.";
   if (result.reason === "invalid_token_id")
@@ -129,6 +135,11 @@ export default function PassportMarketOverview({ memeId }: { memeId: string }) {
           </div>
         ) : (
           <>
+            {result.isStale && (
+              <p className="passport-market-message" role="status">
+                Stale market data. Last successful refresh: {result.lastSuccessfulRefreshAt && Number.isFinite(Date.parse(result.lastSuccessfulRefreshAt)) ? new Date(result.lastSuccessfulRefreshAt).toLocaleString() : "time unavailable"}.
+              </p>
+            )}
             <div className="passport-market-grid">
               <Metric label="Price (USD)" value={formatUsd(market.priceUsd)} />
               <Metric
