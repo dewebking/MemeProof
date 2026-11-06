@@ -1,16 +1,13 @@
 import "server-only";
-import { isRecord, normalizeGeckoPools } from "../normalize";
+import { normalizeGeckoPools } from "../normalize";
 import type { ProviderLookup } from "../types";
+import { discoverNearNetwork } from "./geckoterminal-networks";
 
 const BASE_URL = "https://api.geckoterminal.com/api/v2";
 const NETWORK_CACHE_SECONDS = 21_600;
 const DATA_CACHE_SECONDS = 120;
 const TIMEOUT_MS = 8_000;
 const MAX_NETWORK_PAGES = 10;
-
-type NetworkSupport =
-  | { status: "supported"; networkId: string }
-  | { status: "unsupported" | "unavailable"; networkId: null };
 
 async function getJson(url: string, revalidate: number): Promise<unknown> {
   let response: Response;
@@ -35,74 +32,12 @@ async function getJson(url: string, revalidate: number): Promise<unknown> {
   }
 }
 
-function safeNextUrl(value: unknown): string | null {
-  if (typeof value !== "string") return null;
-  try {
-    const url = new URL(value, BASE_URL);
-    return url.origin === BASE_URL && url.pathname === "/api/v2/networks"
-      ? url.href
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function discoverGeckoNearNetwork(): Promise<NetworkSupport> {
-  let nextUrl: string | null = `${BASE_URL}/networks?page=1`;
-  let confirmedNetworkId: string | null = null;
-  const visited = new Set<string>();
-
-  try {
-    for (let page = 0; nextUrl && page < MAX_NETWORK_PAGES; page += 1) {
-      if (visited.has(nextUrl))
-        return { status: "unavailable", networkId: null };
-      visited.add(nextUrl);
-      const payload: unknown = await getJson(nextUrl, NETWORK_CACHE_SECONDS);
-      if (!isRecord(payload) || !Array.isArray(payload.data))
-        return { status: "unavailable", networkId: null };
-
-      for (const item of payload.data) {
-        if (
-          !isRecord(item) ||
-          typeof item.id !== "string" ||
-          !isRecord(item.attributes)
-        )
-          continue;
-        const name = item.attributes.name;
-        if (
-          typeof name === "string" &&
-          name.trim().toLowerCase() === "near" &&
-          item.id.toLowerCase() !== "aurora"
-        ) {
-          confirmedNetworkId = item.id;
-        }
-      }
-
-      const next = safeNextUrl(
-        isRecord(payload.links) ? payload.links.next : null,
-      );
-      if (
-        isRecord(payload.links) &&
-        typeof payload.links.next === "string" &&
-        !next
-      ) {
-        return { status: "unavailable", networkId: null };
-      }
-      nextUrl = next;
-    }
-  } catch {
-    return confirmedNetworkId
-      ? { status: "supported", networkId: confirmedNetworkId }
-      : { status: "unavailable", networkId: null };
-  }
-
-  if (nextUrl)
-    return confirmedNetworkId
-      ? { status: "supported", networkId: confirmedNetworkId }
-      : { status: "unavailable", networkId: null };
-  return confirmedNetworkId
-    ? { status: "supported", networkId: confirmedNetworkId }
-    : { status: "unsupported", networkId: null };
+export async function discoverGeckoNearNetwork() {
+  return discoverNearNetwork(
+    (url) => getJson(url, NETWORK_CACHE_SECONDS),
+    BASE_URL,
+    MAX_NETWORK_PAGES,
+  );
 }
 
 export async function getGeckoMarketData(
