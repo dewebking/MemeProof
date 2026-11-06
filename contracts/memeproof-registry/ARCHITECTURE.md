@@ -6,8 +6,8 @@ The registry is the authoritative source for MemeProof token identities,
 commitments, amendments, evidence references, review records, disputes, and
 history. Supabase may later index these records for search and feeds, but must
 be rebuildable from NEAR and must not decide canonical state. The first
-implementation stage exposes token registration and token reads. Commitment,
-evidence, review, and dispute methods remain future stages.
+implementation stage exposes token registration, token reads, and commitment
+creation. Amendments, evidence, review, and dispute methods remain future stages.
 
 The contract is configured for NEAR testnet. `NetworkId` currently has only the
 `Testnet` variant, and the initializer records that configuration. NEAR
@@ -24,9 +24,9 @@ RPC before any deployment.
   cross-contract call the signer is the original wallet and the predecessor is
   the immediate calling contract. Registration does not assert official
   ownership or affiliation.
-- `CommitmentRecord` points to a token and creator. Immutable terms live in
-  numbered `CommitmentVersion` records. An amendment adds a version and history
-  event; it never replaces an earlier version.
+- `CommitmentRecord` points to a registered token and creator. Immutable terms
+  live in numbered `CommitmentVersion` records. Creation writes version 1; a
+  future amendment must add a version and history event, never replace terms.
 - `EvidenceReference` stores only an opaque reference, a content hash, submitter,
   and timestamp. File contents and secrets stay off-chain.
 - `HistoryEvent` is designed as an append-only, globally sequenced event record
@@ -131,6 +131,15 @@ layout, then design and test a state-preserving migration for that version.
   bounded cursor-based `get_tokens` views.
 - Payable token registration with signer attribution, duplicate
   protection, metadata checks, exact storage-cost deposit, and excess refund.
+- Payable `create_commitment` accepts any signer for an existing token ID,
+  records the signer as creator, and stores initial terms as version 1. Title,
+  description, and criteria are nonempty control-free UTF-8 text limited to
+  256 bytes, 4 KiB, and 8 KiB respectively. The deadline must be strictly
+  later than the current block timestamp. Creation writes append-only history
+  and a NEP-297 event, charges exact storage cost, rolls back staged state on
+  failure, and refunds excess deposit to the predecessor.
+- `get_commitment` returns the commitment and current terms. Deadline expiry
+  alone does not mark it failed, and no AI verdict is made by the contract.
 - An append-only registration history record and NEP-297-compatible event.
 - Testnet-only network type and versioned configuration.
 - Typed future record/event structures and persistent map layout.
@@ -139,5 +148,5 @@ layout, then design and test a state-preserving migration for that version.
 - Unit tests for initialization, trie-backed map persistence, IDs, validation,
   and Borsh/JSON serialization.
 
-Commitments, amendments, evidence submission, verification, reviews, disputes,
-and their history events remain unimplemented.
+Amendments, evidence submission, verification, reviews, disputes, and their
+history events remain unimplemented.

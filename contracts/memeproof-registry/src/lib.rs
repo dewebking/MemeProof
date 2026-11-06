@@ -4,6 +4,9 @@ use near_sdk::{env, near, AccountId, BorshStorageKey, NearToken, Promise};
 pub const SCHEMA_VERSION: u16 = 2;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
 pub const MAX_METADATA_URI_BYTES: usize = 2 * 1024;
+pub const MAX_COMMITMENT_TITLE_BYTES: usize = 256;
+pub const MAX_COMMITMENT_DESCRIPTION_BYTES: usize = 4 * 1024;
+pub const MAX_COMMITMENT_CRITERIA_BYTES: usize = 8 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 50;
 pub const DEFAULT_PAGE_SIZE: u32 = 20;
 
@@ -66,6 +69,13 @@ pub struct CommitmentVersion {
     pub criteria: String,
     pub deadline_at_ns: u64,
     pub created_at_ns: u64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitmentWithCurrentVersion {
+    pub commitment: CommitmentRecord,
+    pub current_version: CommitmentVersion,
 }
 
 #[near(serializers = [borsh, json])]
@@ -154,6 +164,18 @@ struct TokenRegisteredEventData {
     registered_at_ns: u64,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommitmentCreatedEventData {
+    event_id: u64,
+    commitment_id: u64,
+    token_id: u64,
+    creator: AccountId,
+    version: u32,
+    created_at_ns: u64,
+    deadline_at_ns: u64,
+}
+
 #[near(serializers = [borsh])]
 #[derive(BorshStorageKey)]
 enum StorageKey {
@@ -209,6 +231,136 @@ impl MemeProofRegistry {
 
     pub fn get_config(&self) -> RegistryConfig {
         self.config.clone()
+    }
+
+    pub fn get_commitment(&self, commitment_id: u64) -> Option<CommitmentWithCurrentVersion> {
+        let commitment = self.commitments_by_id.get(&commitment_id)?.clone();
+        let current_version = self
+            .commitment_versions
+            .get(&(commitment_id, commitment.current_version))?
+            .clone();
+        Some(CommitmentWithCurrentVersion {
+            commitment,
+            current_version,
+        })
+    }
+
+    #[payable]
+    pub fn create_commitment(
+        &mut self,
+        token_id: u64,
+        title: String,
+        description: String,
+        criteria: String,
+        deadline_at_ns: u64,
+    ) -> CommitmentWithCurrentVersion {
+        if !self.tokens_by_id.contains_key(&token_id) {
+            env::panic_str("Token is not registered.");
+        }
+        validate_bounded_text(&title, MAX_COMMITMENT_TITLE_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Commitment title is invalid."));
+        validate_bounded_text(&description, MAX_COMMITMENT_DESCRIPTION_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Commitment description is invalid."));
+        validate_bounded_text(&criteria, MAX_COMMITMENT_CRITERIA_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Commitment criteria are invalid."));
+        if deadline_at_ns <= env::block_timestamp() {
+            env::panic_str("Commitment deadline must be in the future.");
+        }
+
+        let previous_commitment_id = self.last_commitment_id;
+        let previous_history_event_id = self.last_history_event_id;
+        let commitment_id = self
+            .allocate_commitment_id()
+            .unwrap_or_else(|_| env::panic_str("Commitment ID space is exhausted."));
+        let event_id = self.allocate_history_event_id().unwrap_or_else(|_| {
+            self.last_commitment_id = previous_commitment_id;
+            env::panic_str("History event ID space is exhausted.")
+        });
+        let creator = env::signer_account_id();
+        let created_at_ns = env::block_timestamp();
+        let commitment = CommitmentRecord {
+            id: commitment_id,
+            token_id,
+            creator: creator.clone(),
+            current_version: 1,
+            created_at_ns,
+        };
+        let version = CommitmentVersion {
+            version: 1,
+            title,
+            description,
+            criteria,
+            deadline_at_ns,
+            created_at_ns,
+        };
+        let history_event = HistoryEvent {
+            id: event_id,
+            actor: creator.clone(),
+            occurred_at_ns: created_at_ns,
+            kind: HistoryEventKind::CommitmentCreated { commitment_id },
+        };
+
+        let storage_before = env::storage_usage();
+        self.commitments_by_id
+            .insert(commitment_id, commitment.clone());
+        self.commitment_versions
+            .insert((commitment_id, 1), version.clone());
+        self.history_events.insert(event_id, history_event);
+        self.commitments_by_id.flush();
+        self.commitment_versions.flush();
+        self.history_events.flush();
+
+        let rollback = |this: &mut Self| {
+            this.commitments_by_id.remove(&commitment_id);
+            this.commitment_versions.remove(&(commitment_id, 1));
+            this.history_events.remove(&event_id);
+            this.commitments_by_id.flush();
+            this.commitment_versions.flush();
+            this.history_events.flush();
+            this.last_commitment_id = previous_commitment_id;
+            this.last_history_event_id = previous_history_event_id;
+        };
+        let storage_increase = checked_storage_increase(storage_before, env::storage_usage())
+            .unwrap_or_else(|| {
+                rollback(self);
+                env::panic_str("Commitment storage accounting failed.")
+            });
+        let required_deposit =
+            checked_storage_cost(env::storage_byte_cost().as_yoctonear(), storage_increase)
+                .unwrap_or_else(|| {
+                    rollback(self);
+                    env::panic_str("Commitment storage cost overflowed.")
+                });
+        let attached_deposit = env::attached_deposit().as_yoctonear();
+        if attached_deposit < required_deposit {
+            rollback(self);
+            env::panic_str("Attached deposit does not cover commitment storage.");
+        }
+        let refund = attached_deposit - required_deposit;
+        if refund > 0 {
+            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
+        }
+        let event = Nep297Event {
+            standard: "memeproof".to_owned(),
+            version: "1.0.0".to_owned(),
+            event: "commitment_created".to_owned(),
+            data: vec![CommitmentCreatedEventData {
+                event_id,
+                commitment_id,
+                token_id,
+                creator,
+                version: 1,
+                created_at_ns,
+                deadline_at_ns: version.deadline_at_ns,
+            }],
+        };
+        let event_json = near_sdk::serde_json::to_string(&event)
+            .unwrap_or_else(|_| env::panic_str("Commitment event serialization failed."));
+        env::log_str(&format!("EVENT_JSON:{event_json}"));
+        CommitmentWithCurrentVersion {
+            commitment,
+            current_version: version,
+        }
     }
 
     #[payable]
@@ -389,6 +541,14 @@ fn allocate_id(last_id: &mut u64) -> Result<u64, IdExhausted> {
     let next_id = last_id.checked_add(1).ok_or(IdExhausted::Exhausted)?;
     *last_id = next_id;
     Ok(next_id)
+}
+
+fn checked_storage_increase(before: u64, after: u64) -> Option<u64> {
+    after.checked_sub(before)
+}
+
+fn checked_storage_cost(byte_cost: u128, storage_increase: u64) -> Option<u128> {
+    byte_cost.checked_mul(u128::from(storage_increase))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -670,6 +830,286 @@ mod tests {
         registry.last_token_id = u64::MAX;
         assert_eq!(registry.allocate_token_id(), Err(IdExhausted::Exhausted));
         assert_eq!(registry.last_token_id, u64::MAX);
+    }
+
+    fn register_test_token(registry: &mut MemeProofRegistry) {
+        set_registration_context(
+            "creator.testnet",
+            "creator.testnet",
+            NearToken::from_near(10),
+            1,
+        );
+        registry.register_token("token.example.testnet".to_owned(), None);
+    }
+
+    #[test]
+    fn commitment_creation_stores_version_history_event_and_signer() {
+        set_context();
+        let mut registry = MemeProofRegistry::new();
+        register_test_token(&mut registry);
+        set_registration_context(
+            "caller.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            20,
+        );
+        let created = registry.create_commitment(
+            1,
+            "Title".into(),
+            "Description".into(),
+            "Criteria".into(),
+            21,
+        );
+        assert_eq!(created.commitment.id, 1);
+        assert_eq!(
+            created.commitment.creator,
+            "wallet.testnet".parse::<AccountId>().unwrap()
+        );
+        assert_eq!(created.commitment.current_version, 1);
+        assert_eq!(created.current_version.version, 1);
+        assert_eq!(created.current_version.deadline_at_ns, 21);
+        assert_eq!(registry.get_commitment(1), Some(created));
+        assert_eq!(
+            registry.history_events.get(&2).unwrap().kind,
+            HistoryEventKind::CommitmentCreated { commitment_id: 1 }
+        );
+        let event = near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(
+            near_sdk::test_utils::get_logs()
+                .last()
+                .unwrap()
+                .trim_start_matches("EVENT_JSON:"),
+        )
+        .unwrap();
+        assert_eq!(event["event"], "commitment_created");
+        assert_eq!(event["data"][0]["creator"], "wallet.testnet");
+        assert_eq!(event["data"][0]["event_id"], 2);
+    }
+
+    #[test]
+    fn commitment_creation_rejects_unknown_token_invalid_fields_and_past_deadline() {
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            10,
+        );
+        let mut registry = MemeProofRegistry::new();
+        for (token_id, title, deadline) in [
+            (1, "Valid".to_owned(), 20),
+            (1, String::new(), 20),
+            (1, "x".repeat(MAX_COMMITMENT_TITLE_BYTES + 1), 20),
+            (1, "Valid".to_owned(), 10),
+        ] {
+            assert!(catch_unwind(AssertUnwindSafe(|| registry.create_commitment(
+                token_id,
+                title,
+                "Description".into(),
+                "Criteria".into(),
+                deadline,
+            )))
+            .is_err());
+        }
+        assert_eq!(registry.last_commitment_id, 0);
+        assert_eq!(registry.last_history_event_id, 0);
+        assert!(!registry.commitments_by_id.contains_key(&1));
+    }
+
+    #[test]
+    fn failed_commitment_creation_does_not_consume_commitment_or_history_ids() {
+        set_context();
+        let mut registry = MemeProofRegistry::new();
+        register_test_token(&mut registry);
+        let prior_history_id = registry.last_history_event_id;
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_yoctonear(1),
+            10,
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.create_commitment(
+            1,
+            "Title".into(),
+            "Description".into(),
+            "Criteria".into(),
+            20,
+        )))
+        .is_err());
+        assert_eq!(registry.last_commitment_id, 0);
+        assert_eq!(registry.last_history_event_id, prior_history_id);
+        assert!(!registry.commitments_by_id.contains_key(&1));
+        assert!(!registry.commitment_versions.contains_key(&(1, 1)));
+        assert!(!registry
+            .history_events
+            .contains_key(&(prior_history_id + 1)));
+
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        let commitment = registry.create_commitment(
+            1,
+            "Title".into(),
+            "Description".into(),
+            "Criteria".into(),
+            20,
+        );
+        assert_eq!(commitment.commitment.id, 1);
+        assert_eq!(registry.last_history_event_id, prior_history_id + 1);
+    }
+
+    #[test]
+    fn history_id_exhaustion_restores_commitment_counter() {
+        set_context();
+        let mut registry = MemeProofRegistry::new();
+        register_test_token(&mut registry);
+        registry.last_history_event_id = u64::MAX;
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            10,
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.create_commitment(
+            1,
+            "Title".into(),
+            "Description".into(),
+            "Criteria".into(),
+            20,
+        )))
+        .is_err());
+        assert_eq!(registry.last_commitment_id, 0);
+        assert_eq!(registry.last_history_event_id, u64::MAX);
+        assert!(!registry.commitments_by_id.contains_key(&1));
+        assert!(!registry.commitment_versions.contains_key(&(1, 1)));
+        assert!(registry.get_commitment(1).is_none());
+    }
+
+    #[test]
+    fn commitment_refund_targets_predecessor_and_matches_excess_deposit() {
+        let attached = NearToken::from_near(10);
+        set_context();
+        let mut registry = MemeProofRegistry::new();
+        register_test_token(&mut registry);
+        set_registration_context("caller.testnet", "wallet.testnet", attached, 10);
+        let storage_before = env::storage_usage();
+        registry.create_commitment(
+            1,
+            "Title".into(),
+            "Description".into(),
+            "Criteria".into(),
+            20,
+        );
+        let increase = env::storage_usage() - storage_before;
+        let required = env::storage_byte_cost().as_yoctonear() * u128::from(increase);
+        let expected_refund = attached.as_yoctonear() - required;
+        let receipts = near_sdk::test_utils::get_created_receipts();
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(
+            receipts[0].receiver_id,
+            "caller.testnet".parse::<AccountId>().unwrap()
+        );
+        assert!(receipts[0].actions.iter().any(|action| matches!(
+            action,
+            near_sdk::mock::MockAction::Transfer { deposit, .. }
+                if deposit.as_yoctonear() == expected_refund
+        )));
+    }
+
+    #[test]
+    fn commitment_storage_arithmetic_rejects_underflow_and_overflow() {
+        assert_eq!(checked_storage_increase(2, 1), None);
+        assert_eq!(checked_storage_cost(u128::MAX, 2), None);
+    }
+
+    #[test]
+    fn get_commitment_returns_none_when_current_version_is_missing() {
+        set_context();
+        let mut registry = MemeProofRegistry::new();
+        registry.commitments_by_id.insert(
+            7,
+            CommitmentRecord {
+                id: 7,
+                token_id: 1,
+                creator: "wallet.testnet".parse().unwrap(),
+                current_version: 1,
+                created_at_ns: 10,
+            },
+        );
+        assert_eq!(registry.get_commitment(7), None);
+        assert_eq!(registry.get_commitment(8), None);
+    }
+
+    #[test]
+    fn description_and_criteria_limits_and_control_characters_are_enforced() {
+        assert_eq!(
+            validate_bounded_text(
+                &"d".repeat(MAX_COMMITMENT_DESCRIPTION_BYTES),
+                MAX_COMMITMENT_DESCRIPTION_BYTES
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_bounded_text(
+                &"d".repeat(MAX_COMMITMENT_DESCRIPTION_BYTES + 1),
+                MAX_COMMITMENT_DESCRIPTION_BYTES
+            ),
+            Err(InputValidationError::TextTooLong)
+        );
+        assert_eq!(
+            validate_bounded_text("bad\ntext", MAX_COMMITMENT_DESCRIPTION_BYTES),
+            Err(InputValidationError::ContainsControlCharacter)
+        );
+        assert_eq!(
+            validate_bounded_text(
+                &"c".repeat(MAX_COMMITMENT_CRITERIA_BYTES),
+                MAX_COMMITMENT_CRITERIA_BYTES
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_bounded_text(
+                &"c".repeat(MAX_COMMITMENT_CRITERIA_BYTES + 1),
+                MAX_COMMITMENT_CRITERIA_BYTES
+            ),
+            Err(InputValidationError::TextTooLong)
+        );
+        assert_eq!(
+            validate_bounded_text("bad\tcriteria", MAX_COMMITMENT_CRITERIA_BYTES),
+            Err(InputValidationError::ContainsControlCharacter)
+        );
+    }
+
+    #[test]
+    fn insufficient_commitment_deposit_rolls_back_records_and_ids() {
+        set_context();
+        let mut registry = MemeProofRegistry::new();
+        register_test_token(&mut registry);
+        let history_id = registry.last_history_event_id;
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_yoctonear(1),
+            10,
+        );
+        let before = env::storage_usage();
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.create_commitment(
+            1,
+            "Title".into(),
+            "Description".into(),
+            "Criteria".into(),
+            20,
+        )))
+        .is_err());
+        assert_eq!(registry.last_commitment_id, 0);
+        assert_eq!(registry.last_history_event_id, history_id);
+        assert!(registry.get_commitment(1).is_none());
+        assert!(!registry.commitments_by_id.contains_key(&1));
+        assert!(!registry.commitment_versions.contains_key(&(1, 1)));
+        assert!(!registry.history_events.contains_key(&(history_id + 1)));
+        assert_eq!(env::storage_usage(), before);
+        assert!(near_sdk::test_utils::get_created_receipts().is_empty());
     }
 
     #[test]
