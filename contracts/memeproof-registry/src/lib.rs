@@ -552,8 +552,9 @@ fn read_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use near_sdk::store::LookupMap;
     use near_sdk::test_utils::VMContextBuilder;
-    use near_sdk::{testing_env, LookupMap};
+    use near_sdk::testing_env;
     use std::panic::{catch_unwind, AssertUnwindSafe};
 
     fn set_context() {
@@ -563,9 +564,9 @@ mod tests {
     fn set_registration_context(predecessor: &str, signer: &str, deposit: NearToken, time: u64) {
         let mut context = VMContextBuilder::new();
         context
-            .current_account_id("registry.testnet".parse().unwrap())
-            .predecessor_account_id(predecessor.parse().unwrap())
-            .signer_account_id(signer.parse().unwrap())
+            .current_account_id("registry.testnet".parse::<AccountId>().unwrap())
+            .predecessor_account_id(predecessor.parse::<AccountId>().unwrap())
+            .signer_account_id(signer.parse::<AccountId>().unwrap())
             .attached_deposit(deposit)
             .block_timestamp(time);
         testing_env!(context.build());
@@ -650,7 +651,7 @@ mod tests {
     fn account_id_validation_uses_near_account_rules() {
         assert_eq!(
             parse_near_account_id("token.example.testnet").unwrap(),
-            "token.example.testnet".parse().unwrap()
+            "token.example.testnet".parse::<AccountId>().unwrap()
         );
         assert_eq!(
             parse_near_account_id("not a valid account"),
@@ -692,11 +693,11 @@ mod tests {
     fn identity_and_history_models_round_trip_through_borsh_and_json() {
         let identity = TokenIdentity {
             network_id: NetworkId::Testnet,
-            token_contract_address: "token.example.testnet".parse().unwrap(),
+            token_contract_address: "token.example.testnet".parse::<AccountId>().unwrap(),
         };
         let event = HistoryEvent {
             id: 7,
-            actor: "creator.testnet".parse().unwrap(),
+            actor: "creator.testnet".parse::<AccountId>().unwrap(),
             occurred_at_ns: 123,
             kind: HistoryEventKind::CommitmentAmended {
                 commitment_id: 3,
@@ -754,7 +755,7 @@ mod tests {
             registry.history_events.get(&1),
             Some(&HistoryEvent {
                 id: 1,
-                actor: "different-signer.testnet".parse().unwrap(),
+                actor: "different-signer.testnet".parse::<AccountId>().unwrap(),
                 occurred_at_ns: 987_654,
                 kind: HistoryEventKind::TokenRegistered { token_id: 1 },
             })
@@ -784,7 +785,10 @@ mod tests {
         );
         let mut registry = MemeProofRegistry::new();
         let record = registry.register_token("token.example.testnet".to_owned(), None);
-        assert_eq!(record.registrant, "wallet.testnet".parse().unwrap());
+        assert_eq!(
+            record.registrant,
+            "wallet.testnet".parse::<AccountId>().unwrap()
+        );
         assert_eq!(
             registry.history_events.get(&1).unwrap().actor,
             record.registrant
