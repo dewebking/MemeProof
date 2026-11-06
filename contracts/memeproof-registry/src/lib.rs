@@ -127,10 +127,18 @@ pub struct HistoryEvent {
 pub struct EvidenceReference {
     pub id: u64,
     pub commitment_id: u64,
+    pub version: u32,
     pub reference: String,
     pub content_hash: String,
     pub submitter: AccountId,
     pub submitted_at_ns: u64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EvidencePage {
+    pub records: Vec<EvidenceReference>,
+    pub next_cursor: Option<u64>,
 }
 
 #[near(serializers = [borsh, json])]
@@ -178,6 +186,15 @@ struct CommitmentAmendedNep297Event {
 }
 
 #[near(serializers = [json])]
+#[serde(rename_all = "snake_case")]
+struct EvidenceSubmittedNep297Event {
+    standard: String,
+    version: String,
+    event: String,
+    data: Vec<EvidenceSubmittedEventData>,
+}
+
+#[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TokenRegisteredEventData {
     event_id: u64,
@@ -212,6 +229,19 @@ struct CommitmentAmendedEventData {
     deadline_at_ns: u64,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct EvidenceSubmittedEventData {
+    event_id: u64,
+    evidence_id: u64,
+    commitment_id: u64,
+    version: u32,
+    submitter: AccountId,
+    reference: String,
+    content_hash: String,
+    submitted_at_ns: u64,
+}
+
 #[near(serializers = [borsh])]
 #[derive(BorshStorageKey)]
 enum StorageKey {
@@ -220,6 +250,7 @@ enum StorageKey {
     CommitmentsById,
     CommitmentVersions,
     HistoryEvents,
+    EvidenceById,
 }
 
 #[near(contract_state)]
@@ -228,11 +259,13 @@ pub struct MemeProofRegistry {
     last_token_id: u64,
     last_commitment_id: u64,
     last_history_event_id: u64,
+    last_evidence_id: u64,
     tokens_by_id: LookupMap<u64, TokenRecord>,
     token_ids_by_identity: LookupMap<TokenIdentity, u64>,
     commitments_by_id: LookupMap<u64, CommitmentRecord>,
     commitment_versions: LookupMap<(u64, u32), CommitmentVersion>,
     history_events: LookupMap<u64, HistoryEvent>,
+    evidence_by_id: LookupMap<u64, EvidenceReference>,
 }
 
 impl Default for MemeProofRegistry {
@@ -249,11 +282,13 @@ impl Default for MemeProofRegistry {
             last_token_id: 0,
             last_commitment_id: 0,
             last_history_event_id: 0,
+            last_evidence_id: 0,
             tokens_by_id: LookupMap::new(StorageKey::TokensById),
             token_ids_by_identity: LookupMap::new(StorageKey::TokenIdsByIdentity),
             commitments_by_id: LookupMap::new(StorageKey::CommitmentsById),
             commitment_versions: LookupMap::new(StorageKey::CommitmentVersions),
             history_events: LookupMap::new(StorageKey::HistoryEvents),
+            evidence_by_id: LookupMap::new(StorageKey::EvidenceById),
         }
     }
 }
@@ -289,6 +324,168 @@ impl MemeProofRegistry {
         self.commitment_versions
             .get(&(commitment_id, version))
             .cloned()
+    }
+
+    pub fn get_evidence(&self, evidence_id: u64) -> Option<EvidenceReference> {
+        self.evidence_by_id.get(&evidence_id).cloned()
+    }
+
+    pub fn get_evidences(&self, after_id: Option<u64>, limit: Option<u32>) -> EvidencePage {
+        self.evidence_page(None, after_id, limit)
+    }
+
+    pub fn get_commitment_evidences(
+        &self,
+        commitment_id: u64,
+        after_id: Option<u64>,
+        limit: Option<u32>,
+    ) -> EvidencePage {
+        self.evidence_page(Some(commitment_id), after_id, limit)
+    }
+
+    fn evidence_page(
+        &self,
+        commitment_id: Option<u64>,
+        after_id: Option<u64>,
+        limit: Option<u32>,
+    ) -> EvidencePage {
+        let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE);
+        assert!(
+            (1..=MAX_PAGE_SIZE).contains(&limit),
+            "Page limit must be between 1 and {MAX_PAGE_SIZE}."
+        );
+        let Some(mut id) = after_id.unwrap_or(0).checked_add(1) else {
+            return EvidencePage {
+                records: vec![],
+                next_cursor: None,
+            };
+        };
+        let mut records = Vec::new();
+        let mut scanned = 0;
+        let mut last_scanned = None;
+        while id <= self.last_evidence_id && scanned < limit {
+            if let Some(record) = self.evidence_by_id.get(&id) {
+                if commitment_id.is_none_or(|wanted| wanted == record.commitment_id) {
+                    records.push(record.clone());
+                }
+            }
+            scanned += 1;
+            last_scanned = Some(id);
+            let Some(next) = id.checked_add(1) else { break };
+            id = next;
+        }
+        EvidencePage {
+            records,
+            next_cursor: (id <= self.last_evidence_id)
+                .then_some(last_scanned)
+                .flatten(),
+        }
+    }
+
+    #[payable]
+    pub fn submit_evidence(
+        &mut self,
+        commitment_id: u64,
+        version: u32,
+        reference: String,
+        content_hash: String,
+    ) -> EvidenceReference {
+        if !self.commitments_by_id.contains_key(&commitment_id) {
+            env::panic_str("Commitment does not exist.");
+        }
+        if !self
+            .commitment_versions
+            .contains_key(&(commitment_id, version))
+        {
+            env::panic_str("Commitment version does not exist.");
+        }
+        validate_metadata_uri(&reference).unwrap_or_else(|_| {
+            env::panic_str("Evidence reference must be a valid public HTTPS or IPFS URI.")
+        });
+        validate_sha256_hex(&content_hash).unwrap_or_else(|_| {
+            env::panic_str("Evidence content hash must be 64 hexadecimal characters.")
+        });
+        let previous_evidence_id = self.last_evidence_id;
+        let previous_history_id = self.last_history_event_id;
+        let evidence_id = self
+            .last_evidence_id
+            .checked_add(1)
+            .unwrap_or_else(|| env::panic_str("Evidence ID space is exhausted."));
+        let event_id = self
+            .allocate_history_event_id()
+            .unwrap_or_else(|_| env::panic_str("History event ID space is exhausted."));
+        let submitter = env::signer_account_id();
+        let submitted_at_ns = env::block_timestamp();
+        let record = EvidenceReference {
+            id: evidence_id,
+            commitment_id,
+            version,
+            reference: reference.clone(),
+            content_hash: content_hash.clone(),
+            submitter: submitter.clone(),
+            submitted_at_ns,
+        };
+        let history = HistoryEvent {
+            id: event_id,
+            actor: submitter.clone(),
+            occurred_at_ns: submitted_at_ns,
+            kind: HistoryEventKind::EvidenceSubmitted {
+                commitment_id,
+                evidence_id,
+            },
+        };
+        let before = env::storage_usage();
+        self.evidence_by_id.insert(evidence_id, record.clone());
+        self.history_events.insert(event_id, history);
+        self.evidence_by_id.flush();
+        self.history_events.flush();
+        let rollback = |this: &mut Self| {
+            this.evidence_by_id.remove(&evidence_id);
+            this.history_events.remove(&event_id);
+            this.evidence_by_id.flush();
+            this.history_events.flush();
+            this.last_evidence_id = previous_evidence_id;
+            this.last_history_event_id = previous_history_id;
+        };
+        let increase =
+            checked_storage_increase(before, env::storage_usage()).unwrap_or_else(|| {
+                rollback(self);
+                env::panic_str("Evidence storage accounting failed.")
+            });
+        let required = checked_storage_cost(env::storage_byte_cost().as_yoctonear(), increase)
+            .unwrap_or_else(|| {
+                rollback(self);
+                env::panic_str("Evidence storage cost overflowed.")
+            });
+        let attached = env::attached_deposit().as_yoctonear();
+        if attached < required {
+            rollback(self);
+            env::panic_str("Attached deposit does not cover evidence storage.");
+        }
+        let refund = attached - required;
+        if refund > 0 {
+            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
+        }
+        let event = EvidenceSubmittedNep297Event {
+            standard: "memeproof".into(),
+            version: "1.0.0".into(),
+            event: "evidence_submitted".into(),
+            data: vec![EvidenceSubmittedEventData {
+                event_id,
+                evidence_id,
+                commitment_id,
+                version,
+                submitter,
+                reference,
+                content_hash,
+                submitted_at_ns,
+            }],
+        };
+        let json = near_sdk::serde_json::to_string(&event)
+            .unwrap_or_else(|_| env::panic_str("Evidence event serialization failed."));
+        env::log_str(&format!("EVENT_JSON:{json}"));
+        self.last_evidence_id = evidence_id;
+        record
     }
 
     pub fn get_commitment_versions(
@@ -1085,6 +1282,185 @@ mod tests {
         assert_eq!(event["event"], "commitment_created");
         assert_eq!(event["data"][0]["creator"], "wallet.testnet");
         assert_eq!(event["data"][0]["event_id"], 2);
+    }
+
+    #[test]
+    fn evidence_submission_records_signer_history_event_and_retrievable_pages() {
+        let mut registry = registry_with_commitment();
+        set_registration_context(
+            "caller.testnet",
+            "submitter.testnet",
+            NearToken::from_near(10),
+            15,
+        );
+        let evidence = registry.submit_evidence(
+            1,
+            1,
+            "https://example.org/proof.json".into(),
+            "ab".repeat(32),
+        );
+        assert_eq!(evidence.id, 1);
+        assert_eq!(
+            evidence.submitter,
+            "submitter.testnet".parse::<AccountId>().unwrap()
+        );
+        assert_eq!(registry.get_evidence(1), Some(evidence.clone()));
+        assert_eq!(
+            registry.get_commitment_evidences(1, None, Some(1)).records,
+            vec![evidence.clone()]
+        );
+        assert_eq!(
+            registry.history_events.get(&3).unwrap().kind,
+            HistoryEventKind::EvidenceSubmitted {
+                commitment_id: 1,
+                evidence_id: 1
+            }
+        );
+        let event = near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(
+            near_sdk::test_utils::get_logs()
+                .last()
+                .unwrap()
+                .trim_start_matches("EVENT_JSON:"),
+        )
+        .unwrap();
+        assert_eq!(event["event"], "evidence_submitted");
+        assert_eq!(event["data"][0]["submitter"], "submitter.testnet");
+        assert_eq!(event["data"][0]["version"], 1);
+    }
+
+    #[test]
+    fn evidence_ids_increment_and_pagination_filters_by_commitment() {
+        let mut registry = registry_with_commitment();
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        registry.submit_evidence(1, 1, "https://example.org/one".into(), "11".repeat(32));
+        registry.submit_evidence(1, 1, "https://example.org/two".into(), "22".repeat(32));
+        registry.create_commitment(
+            1,
+            "Other".into(),
+            "Description".into(),
+            "Criteria".into(),
+            30,
+        );
+        registry.submit_evidence(2, 1, "https://example.org/three".into(), "33".repeat(32));
+        let first = registry.get_evidences(None, Some(2));
+        assert_eq!(
+            first.records.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(first.next_cursor, Some(2));
+        let second = registry.get_evidences(first.next_cursor, Some(2));
+        assert_eq!(
+            second.records.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert_eq!(second.next_cursor, None);
+        let filtered = registry.get_commitment_evidences(1, None, Some(3));
+        assert_eq!(
+            filtered.records.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(filtered.next_cursor, None);
+    }
+
+    #[test]
+    fn evidence_id_and_history_id_exhaustion_leave_maps_and_counters_unchanged() {
+        let mut registry = registry_with_commitment();
+        registry.last_evidence_id = u64::MAX;
+        let old_history = registry.last_history_event_id;
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.submit_evidence(
+            1,
+            1,
+            "https://example.org/a".into(),
+            "aa".repeat(32)
+        )))
+        .is_err());
+        assert_eq!(registry.last_evidence_id, u64::MAX);
+        assert_eq!(registry.last_history_event_id, old_history);
+        registry.last_evidence_id = 0;
+        registry.last_history_event_id = u64::MAX;
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.submit_evidence(
+            1,
+            1,
+            "https://example.org/a".into(),
+            "aa".repeat(32)
+        )))
+        .is_err());
+        assert_eq!(registry.last_evidence_id, 0);
+        assert_eq!(registry.last_history_event_id, u64::MAX);
+        assert!(!registry.evidence_by_id.contains_key(&1));
+        assert!(!registry.history_events.contains_key(&u64::MAX));
+    }
+
+    #[test]
+    fn evidence_submission_rejects_unknown_links_invalid_uri_and_hash() {
+        let mut registry = registry_with_commitment();
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        for (commitment, version, uri, hash) in [
+            (99, 1, "https://example.org/a".to_owned(), "ab".repeat(32)),
+            (1, 99, "https://example.org/a".to_owned(), "ab".repeat(32)),
+            (1, 1, "http://example.org/a".to_owned(), "ab".repeat(32)),
+            (1, 1, "https://example.org/a".to_owned(), "bad".to_owned()),
+        ] {
+            assert!(catch_unwind(AssertUnwindSafe(
+                || registry.submit_evidence(commitment, version, uri, hash)
+            ))
+            .is_err());
+        }
+        assert_eq!(registry.last_evidence_id, 0);
+        assert!(!registry.evidence_by_id.contains_key(&1));
+    }
+
+    #[test]
+    fn evidence_insufficient_deposit_rolls_back_and_excess_refunds_predecessor() {
+        let mut registry = registry_with_commitment();
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_yoctonear(1),
+            11,
+        );
+        let history_before = registry.last_history_event_id;
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.submit_evidence(
+            1,
+            1,
+            "https://example.org/p".into(),
+            "ab".repeat(32)
+        )))
+        .is_err());
+        assert_eq!(registry.last_evidence_id, 0);
+        assert_eq!(registry.last_history_event_id, history_before);
+        assert!(!registry.evidence_by_id.contains_key(&1));
+        assert!(!registry.history_events.contains_key(&(history_before + 1)));
+
+        let attached = NearToken::from_near(10);
+        set_registration_context("caller.testnet", "wallet.testnet", attached, 12);
+        let before = env::storage_usage();
+        registry.submit_evidence(1, 1, "https://example.org/p".into(), "ab".repeat(32));
+        let required =
+            env::storage_byte_cost().as_yoctonear() * u128::from(env::storage_usage() - before);
+        let expected = attached.as_yoctonear() - required;
+        let receipts = near_sdk::test_utils::get_created_receipts();
+        assert_eq!(
+            receipts.last().unwrap().receiver_id,
+            "caller.testnet".parse::<AccountId>().unwrap()
+        );
+        assert!(receipts.last().unwrap().actions.iter().any(|action| matches!(action, near_sdk::mock::MockAction::Transfer { deposit, .. } if deposit.as_yoctonear() == expected)));
     }
 
     #[test]

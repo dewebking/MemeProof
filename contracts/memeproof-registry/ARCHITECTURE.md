@@ -7,8 +7,8 @@ commitments, amendments, evidence references, review records, disputes, and
 history. Supabase may later index these records for search and feeds, but must
 be rebuildable from NEAR and must not decide canonical state. The first
 implementation stage exposes token registration, token reads, and commitment
-creation and creator-authorized amendments. Evidence, review, and dispute
-methods remain future stages.
+creation, creator-authorized amendments, and evidence references. Review and
+dispute methods remain future stages.
 
 The contract is configured for NEAR testnet. `NetworkId` currently has only the
 `Testnet` variant, and the initializer records that configuration. NEAR
@@ -29,8 +29,9 @@ RPC before any deployment.
   live in numbered `CommitmentVersion` records. Creation writes version 1 and
   each creator-authorized amendment appends the next version and history event.
 
-- `EvidenceReference` stores only an opaque reference, a content hash, submitter,
-  and timestamp. File contents and secrets stay off-chain.
+- `EvidenceReference` stores a commitment/version link, public URI, SHA-256
+  content hash, submitter, and timestamp. Evidence files and secrets stay
+  off-chain.
 - `HistoryEvent` is designed as an append-only, globally sequenced event record
   for significant actions. Token registration now writes its corresponding
   history event; event writers for other action types remain unimplemented.
@@ -44,7 +45,7 @@ RPC before any deployment.
 The contract uses `near_sdk::store::LookupMap`, which stores entries in the
 NEAR trie and does not support whole-map iteration. Stable `StorageKey` variants
 separate token records, token-identity lookup, commitments, commitment
-versions, and history events. IDs are monotonic `u64` counters starting at 1;
+versions, evidence, and history events. IDs are monotonic counters starting at 1;
 checked addition rejects exhaustion rather than wrapping or reusing an ID.
 Records are not physically deleted. Future list views must use cursor-based,
 bounded pages (maximum 50 records per page) over monotonic IDs, never an
@@ -150,6 +151,15 @@ layout, then design and test a state-preserving migration for that version.
 - `get_commitment_version` retrieves one immutable version;
   `get_commitment_versions` returns bounded cursor pages up to 50 versions.
   Deadline passage never automatically marks a commitment failed.
+- `submit_evidence(commitment_id, version, reference, content_hash)` is payable
+  and accepts a specific existing commitment version. Any signer may submit;
+  attribution records the signer, while excess storage deposit returns to the
+  predecessor. The URI uses the existing HTTPS/IPFS validator and the hash must
+  be 64 hexadecimal SHA-256 characters. Submission stores only the URI and
+  hash, appends `EvidenceSubmitted` history, and emits NEP-297
+  `evidence_submitted`; it does not alter terms or determine an outcome.
+- `get_evidence`, `get_evidences`, and `get_commitment_evidences` provide point
+  and bounded cursor reads (maximum 50 scanned evidence IDs per page).
 - An append-only registration history record and NEP-297-compatible event.
 - Testnet-only network type and versioned configuration.
 - Typed future record/event structures and persistent map layout.
@@ -158,5 +168,4 @@ layout, then design and test a state-preserving migration for that version.
 - Unit tests for initialization, trie-backed map persistence, IDs, validation,
   and Borsh/JSON serialization.
 
-Evidence submission, verification, reviews, disputes, and their history events
-remain unimplemented.
+Verification, reviews, disputes, and their history events remain unimplemented.
