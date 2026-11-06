@@ -1626,7 +1626,7 @@ mod tests {
             assert_eq!(review.outcome, outcome);
         }
         assert_eq!(registry.last_review_id, 3);
-        assert_eq!(registry.last_history_event_id, 5);
+        assert_eq!(registry.last_history_event_id, 6);
         let page = registry.get_reviews_by_evidence(1, None, Some(2));
         assert_eq!(
             page.records.iter().map(|r| r.id).collect::<Vec<_>>(),
