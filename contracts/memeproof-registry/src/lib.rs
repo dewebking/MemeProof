@@ -177,10 +177,8 @@ pub struct MemeProofRegistry {
     history_events: LookupMap<u64, HistoryEvent>,
 }
 
-#[near]
-impl MemeProofRegistry {
-    #[init]
-    pub fn new() -> Self {
+impl Default for MemeProofRegistry {
+    fn default() -> Self {
         Self {
             config: RegistryConfig {
                 network_id: parse_network_id("testnet")
@@ -199,6 +197,14 @@ impl MemeProofRegistry {
             commitment_versions: LookupMap::new(StorageKey::CommitmentVersions),
             history_events: LookupMap::new(StorageKey::HistoryEvents),
         }
+    }
+}
+
+#[near]
+impl MemeProofRegistry {
+    #[init]
+    pub fn new() -> Self {
+        Self::default()
     }
 
     pub fn get_config(&self) -> RegistryConfig {
@@ -556,6 +562,25 @@ mod tests {
     use near_sdk::test_utils::VMContextBuilder;
     use near_sdk::testing_env;
     use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    #[test]
+    fn default_state_matches_fresh_initialization_defaults() {
+        let registry = MemeProofRegistry::default();
+        assert_eq!(registry.get_config(), MemeProofRegistry::new().get_config());
+        assert_eq!(registry.last_token_id, 0);
+        assert_eq!(registry.last_commitment_id, 0);
+        assert_eq!(registry.last_history_event_id, 0);
+        assert!(!registry.tokens_by_id.contains_key(&1));
+        assert!(
+            !registry.token_ids_by_identity.contains_key(&TokenIdentity {
+                network_id: NetworkId::Testnet,
+                token_contract_address: "token.example.testnet".parse().unwrap(),
+            })
+        );
+        assert!(!registry.commitments_by_id.contains_key(&1));
+        assert!(!registry.commitment_versions.contains_key(&(1, 1)));
+        assert!(!registry.history_events.contains_key(&1));
+    }
 
     fn set_context() {
         testing_env!(VMContextBuilder::new().build());
