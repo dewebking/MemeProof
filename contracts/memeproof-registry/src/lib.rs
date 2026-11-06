@@ -1,7 +1,8 @@
 use near_sdk::store::LookupMap;
 use near_sdk::{env, near, AccountId, BorshStorageKey, NearToken, Promise};
 
-pub const SCHEMA_VERSION: u16 = 2;
+pub const SCHEMA_VERSION: u16 = 3;
+pub const MAX_REVIEW_EXPLANATION_BYTES: usize = 4 * 1024;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
 pub const MAX_METADATA_URI_BYTES: usize = 2 * 1024;
 pub const MAX_COMMITMENT_TITLE_BYTES: usize = 256;
@@ -142,6 +143,35 @@ pub struct EvidencePage {
 }
 
 #[near(serializers = [borsh, json])]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReviewOutcome {
+    Supports,
+    Challenges,
+    Inconclusive,
+}
+
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewRecord {
+    pub id: u64,
+    pub reviewer: AccountId,
+    pub commitment_id: u64,
+    pub evidence_id: u64,
+    pub version: u32,
+    pub outcome: ReviewOutcome,
+    pub explanation: String,
+    pub submitted_at_ns: u64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReviewPage {
+    pub records: Vec<ReviewRecord>,
+    pub next_cursor: Option<u64>,
+}
+
+#[near(serializers = [borsh, json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RegistryConfig {
     pub network_id: NetworkId,
@@ -242,6 +272,28 @@ struct EvidenceSubmittedEventData {
     submitted_at_ns: u64,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct ReviewEventData {
+    event_id: u64,
+    review_id: u64,
+    reviewer: AccountId,
+    commitment_id: u64,
+    evidence_id: u64,
+    version: u32,
+    outcome: ReviewOutcome,
+    submitted_at_ns: u64,
+}
+
+#[near(serializers = [json])]
+#[serde(rename_all = "snake_case")]
+struct ReviewNep297Event {
+    standard: String,
+    version: String,
+    event: String,
+    data: Vec<ReviewEventData>,
+}
+
 #[near(serializers = [borsh])]
 #[derive(BorshStorageKey)]
 enum StorageKey {
@@ -251,6 +303,8 @@ enum StorageKey {
     CommitmentVersions,
     HistoryEvents,
     EvidenceById,
+    ReviewsById,
+    ReviewByEvidenceAndReviewer,
 }
 
 #[near(contract_state)]
@@ -260,12 +314,15 @@ pub struct MemeProofRegistry {
     last_commitment_id: u64,
     last_history_event_id: u64,
     last_evidence_id: u64,
+    last_review_id: u64,
     tokens_by_id: LookupMap<u64, TokenRecord>,
     token_ids_by_identity: LookupMap<TokenIdentity, u64>,
     commitments_by_id: LookupMap<u64, CommitmentRecord>,
     commitment_versions: LookupMap<(u64, u32), CommitmentVersion>,
     history_events: LookupMap<u64, HistoryEvent>,
     evidence_by_id: LookupMap<u64, EvidenceReference>,
+    reviews_by_id: LookupMap<u64, ReviewRecord>,
+    review_by_evidence_and_reviewer: LookupMap<(u64, AccountId), u64>,
 }
 
 impl Default for MemeProofRegistry {
@@ -283,12 +340,17 @@ impl Default for MemeProofRegistry {
             last_commitment_id: 0,
             last_history_event_id: 0,
             last_evidence_id: 0,
+            last_review_id: 0,
             tokens_by_id: LookupMap::new(StorageKey::TokensById),
             token_ids_by_identity: LookupMap::new(StorageKey::TokenIdsByIdentity),
             commitments_by_id: LookupMap::new(StorageKey::CommitmentsById),
             commitment_versions: LookupMap::new(StorageKey::CommitmentVersions),
             history_events: LookupMap::new(StorageKey::HistoryEvents),
             evidence_by_id: LookupMap::new(StorageKey::EvidenceById),
+            reviews_by_id: LookupMap::new(StorageKey::ReviewsById),
+            review_by_evidence_and_reviewer: LookupMap::new(
+                StorageKey::ReviewByEvidenceAndReviewer,
+            ),
         }
     }
 }
@@ -328,6 +390,169 @@ impl MemeProofRegistry {
 
     pub fn get_evidence(&self, evidence_id: u64) -> Option<EvidenceReference> {
         self.evidence_by_id.get(&evidence_id).cloned()
+    }
+
+    #[payable]
+    pub fn submit_review(
+        &mut self,
+        evidence_id: u64,
+        outcome: ReviewOutcome,
+        explanation: String,
+    ) -> ReviewRecord {
+        let evidence = self
+            .evidence_by_id
+            .get(&evidence_id)
+            .cloned()
+            .unwrap_or_else(|| env::panic_str("Evidence does not exist."));
+        validate_bounded_text(&explanation, MAX_REVIEW_EXPLANATION_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Review explanation is invalid."));
+        let reviewer = env::signer_account_id();
+        let duplicate_key = (evidence_id, reviewer.clone());
+        if self
+            .review_by_evidence_and_reviewer
+            .contains_key(&duplicate_key)
+        {
+            env::panic_str("Reviewer has already reviewed this evidence.");
+        }
+        let previous_review_id = self.last_review_id;
+        let previous_history_id = self.last_history_event_id;
+        let review_id = previous_review_id
+            .checked_add(1)
+            .unwrap_or_else(|| env::panic_str("Review ID space is exhausted."));
+        let event_id = self
+            .allocate_history_event_id()
+            .unwrap_or_else(|_| env::panic_str("History event ID space is exhausted."));
+        let submitted_at_ns = env::block_timestamp();
+        let record = ReviewRecord {
+            id: review_id,
+            reviewer: reviewer.clone(),
+            commitment_id: evidence.commitment_id,
+            evidence_id,
+            version: evidence.version,
+            outcome,
+            explanation,
+            submitted_at_ns,
+        };
+        let history = HistoryEvent {
+            id: event_id,
+            actor: reviewer.clone(),
+            occurred_at_ns: submitted_at_ns,
+            kind: HistoryEventKind::ReviewRecorded {
+                commitment_id: evidence.commitment_id,
+                review_id,
+            },
+        };
+        let before = env::storage_usage();
+        self.reviews_by_id.insert(review_id, record.clone());
+        self.review_by_evidence_and_reviewer
+            .insert(duplicate_key.clone(), review_id);
+        self.history_events.insert(event_id, history);
+        self.reviews_by_id.flush();
+        self.review_by_evidence_and_reviewer.flush();
+        self.history_events.flush();
+        let rollback = |this: &mut Self| {
+            this.reviews_by_id.remove(&review_id);
+            this.review_by_evidence_and_reviewer.remove(&duplicate_key);
+            this.history_events.remove(&event_id);
+            this.reviews_by_id.flush();
+            this.review_by_evidence_and_reviewer.flush();
+            this.history_events.flush();
+            this.last_review_id = previous_review_id;
+            this.last_history_event_id = previous_history_id;
+        };
+        let increase =
+            checked_storage_increase(before, env::storage_usage()).unwrap_or_else(|| {
+                rollback(self);
+                env::panic_str("Review storage accounting failed.")
+            });
+        let required = checked_storage_cost(env::storage_byte_cost().as_yoctonear(), increase)
+            .unwrap_or_else(|| {
+                rollback(self);
+                env::panic_str("Review storage cost overflowed.")
+            });
+        let attached = env::attached_deposit().as_yoctonear();
+        if attached < required {
+            rollback(self);
+            env::panic_str("Attached deposit does not cover review storage.");
+        }
+        let refund = attached - required;
+        if refund > 0 {
+            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
+        }
+        let event = ReviewNep297Event {
+            standard: "memeproof".into(),
+            version: "1.0.0".into(),
+            event: "review_submitted".into(),
+            data: vec![ReviewEventData {
+                event_id,
+                review_id,
+                reviewer,
+                commitment_id: evidence.commitment_id,
+                evidence_id,
+                version: evidence.version,
+                outcome,
+                submitted_at_ns,
+            }],
+        };
+        let json = near_sdk::serde_json::to_string(&event)
+            .unwrap_or_else(|_| env::panic_str("Review event serialization failed."));
+        env::log_str(&format!("EVENT_JSON:{json}"));
+        self.last_review_id = review_id;
+        record
+    }
+
+    pub fn get_review(&self, review_id: u64) -> Option<ReviewRecord> {
+        self.reviews_by_id.get(&review_id).cloned()
+    }
+
+    pub fn get_reviews(&self, after_id: Option<u64>, limit: Option<u32>) -> ReviewPage {
+        self.review_page(None, after_id, limit)
+    }
+
+    pub fn get_reviews_by_evidence(
+        &self,
+        evidence_id: u64,
+        after_id: Option<u64>,
+        limit: Option<u32>,
+    ) -> ReviewPage {
+        self.review_page(Some(evidence_id), after_id, limit)
+    }
+
+    fn review_page(
+        &self,
+        evidence_id: Option<u64>,
+        after_id: Option<u64>,
+        limit: Option<u32>,
+    ) -> ReviewPage {
+        let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE);
+        assert!(
+            (1..=MAX_PAGE_SIZE).contains(&limit),
+            "Page limit must be between 1 and {MAX_PAGE_SIZE}."
+        );
+        let Some(mut id) = after_id.unwrap_or(0).checked_add(1) else {
+            return ReviewPage {
+                records: vec![],
+                next_cursor: None,
+            };
+        };
+        let mut records = Vec::new();
+        let mut scanned = 0;
+        let mut last = None;
+        while id <= self.last_review_id && scanned < limit {
+            if let Some(review) = self.reviews_by_id.get(&id) {
+                if evidence_id.is_none_or(|wanted| wanted == review.evidence_id) {
+                    records.push(review.clone());
+                }
+            }
+            scanned += 1;
+            last = Some(id);
+            let Some(next) = id.checked_add(1) else { break };
+            id = next;
+        }
+        ReviewPage {
+            records,
+            next_cursor: (id <= self.last_review_id).then_some(last).flatten(),
+        }
     }
 
     pub fn get_evidences(&self, after_id: Option<u64>, limit: Option<u32>) -> EvidencePage {
@@ -1326,6 +1551,229 @@ mod tests {
         assert_eq!(event["event"], "evidence_submitted");
         assert_eq!(event["data"][0]["submitter"], "submitter.testnet");
         assert_eq!(event["data"][0]["version"], 1);
+    }
+
+    #[test]
+    fn review_is_attributed_retrievable_and_duplicate_protected() {
+        let mut registry = registry_with_commitment();
+        set_registration_context(
+            "wallet.testnet",
+            "submitter.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        registry.submit_evidence(1, 1, "https://example.org/evidence".into(), "ab".repeat(32));
+        set_registration_context(
+            "caller.testnet",
+            "reviewer.testnet",
+            NearToken::from_near(10),
+            12,
+        );
+        let review =
+            registry.submit_review(1, ReviewOutcome::Supports, "Evidence meets criteria".into());
+        assert_eq!(registry.get_review(1), Some(review.clone()));
+        assert_eq!(registry.get_reviews(None, Some(2)).records, vec![review]);
+        assert_eq!(
+            registry.history_events.get(&4).unwrap().actor,
+            "reviewer.testnet".parse::<AccountId>().unwrap()
+        );
+        let event = near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(
+            near_sdk::test_utils::get_logs()
+                .last()
+                .unwrap()
+                .trim_start_matches("EVENT_JSON:"),
+        )
+        .unwrap();
+        assert_eq!(event["event"], "review_submitted");
+        assert_eq!(event["data"][0]["outcome"], "supports");
+        set_registration_context(
+            "reviewer.testnet",
+            "reviewer.testnet",
+            NearToken::from_near(10),
+            13,
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.submit_review(
+            1,
+            ReviewOutcome::Challenges,
+            "duplicate".into()
+        )))
+        .is_err());
+    }
+
+    fn registry_with_evidence() -> MemeProofRegistry {
+        let mut registry = registry_with_commitment();
+        set_registration_context(
+            "submitter.testnet",
+            "submitter.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        registry.submit_evidence(1, 1, "https://example.org/evidence".into(), "ab".repeat(32));
+        registry
+    }
+
+    #[test]
+    fn reviews_support_all_outcomes_and_multiple_reviewers_with_sequential_ids() {
+        let mut registry = registry_with_evidence();
+        for (signer, outcome, expected_id) in [
+            ("reviewer.testnet", ReviewOutcome::Supports, 1),
+            ("second.testnet", ReviewOutcome::Challenges, 2),
+            ("third.testnet", ReviewOutcome::Inconclusive, 3),
+        ] {
+            set_registration_context(signer, signer, NearToken::from_near(10), 20 + expected_id);
+            let review = registry.submit_review(1, outcome, "Reasonable explanation".into());
+            assert_eq!(review.id, expected_id);
+            assert_eq!(review.outcome, outcome);
+        }
+        assert_eq!(registry.last_review_id, 3);
+        assert_eq!(registry.last_history_event_id, 5);
+        let page = registry.get_reviews_by_evidence(1, None, Some(2));
+        assert_eq!(
+            page.records.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(page.next_cursor, Some(2));
+        let final_page = registry.get_reviews_by_evidence(1, page.next_cursor, Some(2));
+        assert_eq!(
+            final_page.records.iter().map(|r| r.id).collect::<Vec<_>>(),
+            vec![3]
+        );
+        assert_eq!(final_page.next_cursor, None);
+        assert!(registry
+            .get_reviews_by_evidence(999, None, Some(2))
+            .records
+            .is_empty());
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| registry.get_reviews_by_evidence(
+                1,
+                None,
+                Some(0)
+            )))
+            .is_err()
+        );
+        set_registration_context(
+            "reviewer.testnet",
+            "reviewer.testnet",
+            NearToken::from_near(10),
+            30,
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.submit_review(
+            1,
+            ReviewOutcome::Supports,
+            "duplicate".into()
+        )))
+        .is_err());
+    }
+
+    #[test]
+    fn review_references_and_explanation_validation_are_enforced() {
+        let mut registry = registry_with_evidence();
+        set_registration_context(
+            "reviewer.testnet",
+            "reviewer.testnet",
+            NearToken::from_near(10),
+            20,
+        );
+        for (id, explanation) in [
+            (999, "valid".to_owned()),
+            (1, String::new()),
+            (1, "bad\ntext".to_owned()),
+            (1, "x".repeat(MAX_REVIEW_EXPLANATION_BYTES + 1)),
+        ] {
+            assert!(catch_unwind(AssertUnwindSafe(|| registry.submit_review(
+                id,
+                ReviewOutcome::Supports,
+                explanation
+            )))
+            .is_err());
+        }
+        assert_eq!(registry.last_review_id, 0);
+        assert_eq!(registry.last_history_event_id, 3);
+    }
+
+    #[test]
+    fn review_underfunding_and_id_exhaustion_preserve_all_state() {
+        let mut registry = registry_with_evidence();
+        let history_id = registry.last_history_event_id;
+        set_registration_context(
+            "reviewer.testnet",
+            "reviewer.testnet",
+            NearToken::from_yoctonear(1),
+            20,
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.submit_review(
+            1,
+            ReviewOutcome::Supports,
+            "Reason".into()
+        )))
+        .is_err());
+        assert_eq!(registry.last_review_id, 0);
+        assert_eq!(registry.last_history_event_id, history_id);
+        assert!(!registry.reviews_by_id.contains_key(&1));
+        assert!(!registry
+            .review_by_evidence_and_reviewer
+            .contains_key(&(1, "reviewer.testnet".parse().unwrap())));
+        assert!(!registry.history_events.contains_key(&(history_id + 1)));
+
+        registry.last_review_id = u64::MAX;
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.submit_review(
+            1,
+            ReviewOutcome::Supports,
+            "Reason".into()
+        )))
+        .is_err());
+        assert_eq!(registry.last_review_id, u64::MAX);
+        registry.last_review_id = 0;
+        registry.last_history_event_id = u64::MAX;
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.submit_review(
+            1,
+            ReviewOutcome::Supports,
+            "Reason".into()
+        )))
+        .is_err());
+        assert_eq!(registry.last_review_id, 0);
+        assert_eq!(registry.last_history_event_id, u64::MAX);
+        assert!(!registry.reviews_by_id.contains_key(&1));
+        assert!(!registry
+            .review_by_evidence_and_reviewer
+            .contains_key(&(1, "reviewer.testnet".parse().unwrap())));
+    }
+
+    #[test]
+    fn review_refund_and_event_history_attribution_are_exact() {
+        let mut registry = registry_with_evidence();
+        let deposit = NearToken::from_near(10);
+        set_registration_context("caller.testnet", "reviewer.testnet", deposit, 42);
+        let before = env::storage_usage();
+        let review = registry.submit_review(1, ReviewOutcome::Challenges, "Concern".into());
+        let required =
+            env::storage_byte_cost().as_yoctonear() * u128::from(env::storage_usage() - before);
+        let expected_refund = deposit.as_yoctonear() - required;
+        let receipt = near_sdk::test_utils::get_created_receipts()
+            .last()
+            .unwrap()
+            .clone();
+        assert_eq!(
+            receipt.receiver_id,
+            "caller.testnet".parse::<AccountId>().unwrap()
+        );
+        assert!(receipt.actions.iter().any(|action| matches!(action, near_sdk::mock::MockAction::Transfer { deposit, .. } if deposit.as_yoctonear() == expected_refund)));
+        let history = registry.history_events.get(&4).unwrap();
+        assert_eq!(history.actor, review.reviewer);
+        assert_eq!(history.occurred_at_ns, 42);
+        let event = near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(
+            near_sdk::test_utils::get_logs()
+                .last()
+                .unwrap()
+                .trim_start_matches("EVENT_JSON:"),
+        )
+        .unwrap();
+        assert_eq!(event["data"][0]["reviewer"], "reviewer.testnet");
+        assert_eq!(event["data"][0]["evidence_id"], 1);
+        assert_eq!(event["data"][0]["commitment_id"], 1);
+        assert_eq!(event["data"][0]["version"], 1);
+        assert_eq!(event["data"][0]["outcome"], "challenges");
+        assert_eq!(event["data"][0]["submitted_at_ns"], 42);
     }
 
     #[test]

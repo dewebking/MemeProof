@@ -7,8 +7,12 @@ commitments, amendments, evidence references, review records, disputes, and
 history. Supabase may later index these records for search and feeds, but must
 be rebuildable from NEAR and must not decide canonical state. The first
 implementation stage exposes token registration, token reads, and commitment
-creation, creator-authorized amendments, and evidence references. Review and
-dispute methods remain future stages.
+creation, creator-authorized amendments, evidence references, and community
+reviews. Dispute methods remain future stages.
+
+The current layout reports schema version 3. Changing `SCHEMA_VERSION` only
+labels the layout; it does not migrate persisted state. Existing initialized
+state must not be overwritten and requires an explicitly designed migration.
 
 The contract is configured for NEAR testnet. `NetworkId` currently has only the
 `Testnet` variant, and the initializer records that configuration. NEAR
@@ -32,11 +36,14 @@ RPC before any deployment.
 - `EvidenceReference` stores a commitment/version link, public URI, SHA-256
   content hash, submitter, and timestamp. Evidence files and secrets stay
   off-chain.
+- `ReviewRecord` stores reviewer attribution, linked evidence and commitment
+  version, a structured community opinion, bounded explanation, and timestamp.
+  A signer may review an evidence record once; reviews are append-only opinions,
+  not final verdicts.
 - `HistoryEvent` is designed as an append-only, globally sequenced event record
   for significant actions. Token registration now writes its corresponding
   history event; event writers for other action types remain unimplemented.
-- Reviews must preserve attribution and distinguish automated observations,
-  AI assistance, and human/community decisions. AI cannot be a final authority.
+- AI cannot determine final commitment outcomes.
 - A deadline does not itself cause a failed status. Status transitions require
   a separately specified evidence/review rule.
 
@@ -121,7 +128,7 @@ wallet flow are not configured, and this repository contains no registry
 account ID, deployment record, or initialized-state snapshot. On that available
 evidence, no previous initialized registry instance is identified. This code
 requires fresh initialization with `new`. `SCHEMA_VERSION` only reports the
-current schema; it does not convert old state. The `#[init]` initializer must
+current schema; changing this number does not migrate existing state. The `#[init]` initializer must
 not be used to replace an existing initialized account. There is no migration
 method because no prior initialized state or historical storage layout has
 been identified. If an existing deployment is discovered, do not upgrade or
@@ -160,6 +167,13 @@ layout, then design and test a state-preserving migration for that version.
   `evidence_submitted`; it does not alter terms or determine an outcome.
 - `get_evidence`, `get_evidences`, and `get_commitment_evidences` provide point
   and bounded cursor reads (maximum 50 scanned evidence IDs per page).
+- `submit_review(evidence_id, outcome, explanation)` accepts a single review
+  per signer/evidence pair. Outcomes are `supports`, `challenges`, and
+  `inconclusive`; explanation is bounded to 4 KiB. Reviews are payable, use
+  exact storage deposits and predecessor refunds, append `ReviewRecorded`
+  history, and emit NEP-297 `review_submitted`. `get_review` and `get_reviews`
+  provide point and bounded cursor retrieval. A review is community input, not
+  a final verdict; AI and this method do not resolve commitments.
 - An append-only registration history record and NEP-297-compatible event.
 - Testnet-only network type and versioned configuration.
 - Typed future record/event structures and persistent map layout.
@@ -168,4 +182,4 @@ layout, then design and test a state-preserving migration for that version.
 - Unit tests for initialization, trie-backed map persistence, IDs, validation,
   and Borsh/JSON serialization.
 
-Verification, reviews, disputes, and their history events remain unimplemented.
+Verification, disputes, and their history events remain unimplemented.
