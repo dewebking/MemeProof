@@ -78,6 +78,13 @@ pub struct CommitmentWithCurrentVersion {
     pub current_version: CommitmentVersion,
 }
 
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CommitmentVersionPage {
+    pub versions: Vec<CommitmentVersion>,
+    pub next_cursor: Option<u32>,
+}
+
 #[near(serializers = [borsh, json])]
 #[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -162,6 +169,15 @@ struct CommitmentNep297Event {
 }
 
 #[near(serializers = [json])]
+#[serde(rename_all = "snake_case")]
+struct CommitmentAmendedNep297Event {
+    standard: String,
+    version: String,
+    event: String,
+    data: Vec<CommitmentAmendedEventData>,
+}
+
+#[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TokenRegisteredEventData {
     event_id: u64,
@@ -182,6 +198,17 @@ struct CommitmentCreatedEventData {
     creator: AccountId,
     version: u32,
     created_at_ns: u64,
+    deadline_at_ns: u64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct CommitmentAmendedEventData {
+    event_id: u64,
+    commitment_id: u64,
+    version: u32,
+    actor: AccountId,
+    amended_at_ns: u64,
     deadline_at_ns: u64,
 }
 
@@ -252,6 +279,172 @@ impl MemeProofRegistry {
             commitment,
             current_version,
         })
+    }
+
+    pub fn get_commitment_version(
+        &self,
+        commitment_id: u64,
+        version: u32,
+    ) -> Option<CommitmentVersion> {
+        self.commitment_versions
+            .get(&(commitment_id, version))
+            .cloned()
+    }
+
+    pub fn get_commitment_versions(
+        &self,
+        commitment_id: u64,
+        after_version: Option<u32>,
+        limit: Option<u32>,
+    ) -> CommitmentVersionPage {
+        let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE);
+        assert!(
+            (1..=MAX_PAGE_SIZE).contains(&limit),
+            "Page limit must be between 1 and {MAX_PAGE_SIZE}."
+        );
+        let Some(commitment) = self.commitments_by_id.get(&commitment_id) else {
+            return CommitmentVersionPage {
+                versions: Vec::new(),
+                next_cursor: None,
+            };
+        };
+        let Some(mut candidate) = after_version.unwrap_or(0).checked_add(1) else {
+            return CommitmentVersionPage {
+                versions: Vec::new(),
+                next_cursor: None,
+            };
+        };
+        let mut versions = Vec::new();
+        while candidate <= commitment.current_version && versions.len() < limit as usize {
+            if let Some(version) = self.commitment_versions.get(&(commitment_id, candidate)) {
+                versions.push(version.clone());
+            }
+            let Some(next) = candidate.checked_add(1) else {
+                break;
+            };
+            candidate = next;
+        }
+        let next_cursor = (candidate <= commitment.current_version).then_some(candidate - 1);
+        CommitmentVersionPage {
+            versions,
+            next_cursor,
+        }
+    }
+
+    #[payable]
+    pub fn amend_commitment(
+        &mut self,
+        commitment_id: u64,
+        title: String,
+        description: String,
+        criteria: String,
+        deadline_at_ns: u64,
+    ) -> CommitmentWithCurrentVersion {
+        let mut commitment = self
+            .commitments_by_id
+            .get(&commitment_id)
+            .cloned()
+            .unwrap_or_else(|| env::panic_str("Commitment does not exist."));
+        let signer = env::signer_account_id();
+        if signer != commitment.creator {
+            env::panic_str("Only the commitment creator may amend it.");
+        }
+        validate_bounded_text(&title, MAX_COMMITMENT_TITLE_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Commitment title is invalid."));
+        validate_bounded_text(&description, MAX_COMMITMENT_DESCRIPTION_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Commitment description is invalid."));
+        validate_bounded_text(&criteria, MAX_COMMITMENT_CRITERIA_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Commitment criteria are invalid."));
+        if deadline_at_ns <= env::block_timestamp() {
+            env::panic_str("Commitment deadline must be in the future.");
+        }
+        let previous_commitment = commitment.clone();
+        let previous_history_id = self.last_history_event_id;
+        let version_number = commitment
+            .current_version
+            .checked_add(1)
+            .unwrap_or_else(|| env::panic_str("Commitment version space is exhausted."));
+        let event_id = self
+            .allocate_history_event_id()
+            .unwrap_or_else(|_| env::panic_str("History event ID space is exhausted."));
+        let amended_at_ns = env::block_timestamp();
+        let version = CommitmentVersion {
+            version: version_number,
+            title,
+            description,
+            criteria,
+            deadline_at_ns,
+            created_at_ns: amended_at_ns,
+        };
+        let history = HistoryEvent {
+            id: event_id,
+            actor: signer.clone(),
+            occurred_at_ns: amended_at_ns,
+            kind: HistoryEventKind::CommitmentAmended {
+                commitment_id,
+                version: version_number,
+            },
+        };
+        let storage_before = env::storage_usage();
+        self.commitment_versions
+            .insert((commitment_id, version_number), version.clone());
+        self.history_events.insert(event_id, history);
+        commitment.current_version = version_number;
+        self.commitments_by_id
+            .insert(commitment_id, commitment.clone());
+        self.commitment_versions.flush();
+        self.history_events.flush();
+        self.commitments_by_id.flush();
+        let rollback = |this: &mut Self| {
+            this.commitment_versions
+                .remove(&(commitment_id, version_number));
+            this.history_events.remove(&event_id);
+            this.commitments_by_id
+                .insert(commitment_id, previous_commitment.clone());
+            this.commitment_versions.flush();
+            this.history_events.flush();
+            this.commitments_by_id.flush();
+            this.last_history_event_id = previous_history_id;
+        };
+        let increase = checked_storage_increase(storage_before, env::storage_usage())
+            .unwrap_or_else(|| {
+                rollback(self);
+                env::panic_str("Commitment amendment storage accounting failed.")
+            });
+        let required = checked_storage_cost(env::storage_byte_cost().as_yoctonear(), increase)
+            .unwrap_or_else(|| {
+                rollback(self);
+                env::panic_str("Commitment amendment storage cost overflowed.")
+            });
+        let attached = env::attached_deposit().as_yoctonear();
+        if attached < required {
+            rollback(self);
+            env::panic_str("Attached deposit does not cover commitment amendment storage.");
+        }
+        let refund = attached - required;
+        if refund > 0 {
+            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
+        }
+        let event = CommitmentAmendedNep297Event {
+            standard: "memeproof".to_owned(),
+            version: "1.0.0".to_owned(),
+            event: "commitment_amended".to_owned(),
+            data: vec![CommitmentAmendedEventData {
+                event_id,
+                commitment_id,
+                version: version_number,
+                actor: signer,
+                amended_at_ns,
+                deadline_at_ns,
+            }],
+        };
+        let json = near_sdk::serde_json::to_string(&event)
+            .unwrap_or_else(|_| env::panic_str("Commitment amendment event serialization failed."));
+        env::log_str(&format!("EVENT_JSON:{json}"));
+        CommitmentWithCurrentVersion {
+            commitment,
+            current_version: version,
+        }
     }
 
     #[payable]
@@ -892,6 +1085,363 @@ mod tests {
         assert_eq!(event["event"], "commitment_created");
         assert_eq!(event["data"][0]["creator"], "wallet.testnet");
         assert_eq!(event["data"][0]["event_id"], 2);
+    }
+
+    #[test]
+    fn amendment_appends_version_history_and_nep297_event() {
+        set_context();
+        let mut registry = MemeProofRegistry::new();
+        register_test_token(&mut registry);
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            10,
+        );
+        registry.create_commitment(
+            1,
+            "First".into(),
+            "Description".into(),
+            "Criteria".into(),
+            20,
+        );
+        set_registration_context(
+            "caller.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        let amended = registry.amend_commitment(
+            1,
+            "Second".into(),
+            "Updated".into(),
+            "New criteria".into(),
+            30,
+        );
+        assert_eq!(amended.commitment.current_version, 2);
+        assert_eq!(
+            registry.get_commitment_version(1, 1).unwrap().title,
+            "First"
+        );
+        assert_eq!(
+            registry.get_commitment_version(1, 2).unwrap().title,
+            "Second"
+        );
+        let page = registry.get_commitment_versions(1, None, Some(1));
+        assert_eq!(page.versions[0].version, 1);
+        assert_eq!(page.next_cursor, Some(1));
+        assert_eq!(
+            registry.history_events.get(&3).unwrap().kind,
+            HistoryEventKind::CommitmentAmended {
+                commitment_id: 1,
+                version: 2
+            }
+        );
+        let event = near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(
+            near_sdk::test_utils::get_logs()
+                .last()
+                .unwrap()
+                .trim_start_matches("EVENT_JSON:"),
+        )
+        .unwrap();
+        assert_eq!(event["event"], "commitment_amended");
+        assert_eq!(event["data"][0]["version"], 2);
+    }
+
+    #[test]
+    fn amendment_rejects_non_creator_and_invalid_terms_without_mutation() {
+        set_context();
+        let mut registry = MemeProofRegistry::new();
+        register_test_token(&mut registry);
+        set_registration_context(
+            "creator.testnet",
+            "creator.testnet",
+            NearToken::from_near(10),
+            10,
+        );
+        registry.create_commitment(
+            1,
+            "First".into(),
+            "Description".into(),
+            "Criteria".into(),
+            20,
+        );
+        set_registration_context(
+            "attacker.testnet",
+            "attacker.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.amend_commitment(
+            1,
+            "X".into(),
+            "D".into(),
+            "C".into(),
+            30
+        )))
+        .is_err());
+        set_registration_context(
+            "creator.testnet",
+            "creator.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.amend_commitment(
+            1,
+            String::new(),
+            "D".into(),
+            "C".into(),
+            30
+        )))
+        .is_err());
+        assert_eq!(
+            registry.commitments_by_id.get(&1).unwrap().current_version,
+            1
+        );
+        assert!(registry.get_commitment_version(1, 2).is_none());
+    }
+
+    #[test]
+    fn amendments_are_sequential_and_keep_every_prior_version() {
+        let mut registry = registry_with_commitment();
+        for (time, title) in [(11, "Second"), (12, "Third")] {
+            set_registration_context(
+                "caller.testnet",
+                "wallet.testnet",
+                NearToken::from_near(10),
+                time,
+            );
+            let result = registry.amend_commitment(
+                1,
+                title.into(),
+                "Description".into(),
+                "Criteria".into(),
+                time + 10,
+            );
+            assert_eq!(result.current_version.version, (time - 9) as u32);
+        }
+        assert_eq!(
+            registry.get_commitment_version(1, 1).unwrap().title,
+            "First"
+        );
+        assert_eq!(
+            registry.get_commitment_version(1, 2).unwrap().title,
+            "Second"
+        );
+        assert_eq!(
+            registry.get_commitment_version(1, 3).unwrap().title,
+            "Third"
+        );
+    }
+
+    #[test]
+    fn failed_amendment_rolls_back_version_history_and_current_pointer() {
+        let mut registry = registry_with_commitment();
+        let old_history = registry.last_history_event_id;
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_yoctonear(1),
+            11,
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.amend_commitment(
+            1,
+            "Second".into(),
+            "Description".into(),
+            "Criteria".into(),
+            20
+        )))
+        .is_err());
+        assert_eq!(
+            registry.commitments_by_id.get(&1).unwrap().current_version,
+            1
+        );
+        assert!(registry.get_commitment_version(1, 2).is_none());
+        assert_eq!(registry.last_history_event_id, old_history);
+        assert!(!registry.history_events.contains_key(&(old_history + 1)));
+    }
+
+    #[test]
+    fn successful_amendment_refunds_exact_excess_to_predecessor_and_attributes_event() {
+        let mut registry = registry_with_commitment();
+        let attached = NearToken::from_near(10);
+        set_registration_context("caller.testnet", "wallet.testnet", attached, 11);
+        let before = env::storage_usage();
+        registry.amend_commitment(
+            1,
+            "Second".into(),
+            "Description".into(),
+            "Criteria".into(),
+            21,
+        );
+        let required =
+            env::storage_byte_cost().as_yoctonear() * u128::from(env::storage_usage() - before);
+        let expected_refund = attached.as_yoctonear() - required;
+        let receipts = near_sdk::test_utils::get_created_receipts();
+        assert_eq!(
+            receipts[0].receiver_id,
+            "caller.testnet".parse::<AccountId>().unwrap()
+        );
+        assert!(receipts[0].actions.iter().any(|action| matches!(action,
+            near_sdk::mock::MockAction::Transfer { deposit, .. } if deposit.as_yoctonear() == expected_refund)));
+        let history = registry.history_events.get(&3).unwrap();
+        assert_eq!(
+            history.actor,
+            "wallet.testnet".parse::<AccountId>().unwrap()
+        );
+        assert_eq!(history.occurred_at_ns, 11);
+        assert_eq!(
+            history.kind,
+            HistoryEventKind::CommitmentAmended {
+                commitment_id: 1,
+                version: 2
+            }
+        );
+        let json = near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(
+            near_sdk::test_utils::get_logs()
+                .last()
+                .unwrap()
+                .trim_start_matches("EVENT_JSON:"),
+        )
+        .unwrap();
+        assert_eq!(json["data"][0]["commitment_id"], 1);
+        assert_eq!(json["data"][0]["actor"], "wallet.testnet");
+        assert_eq!(json["data"][0]["version"], 2);
+        assert_eq!(json["data"][0]["amended_at_ns"], 11);
+    }
+
+    #[test]
+    fn version_and_history_id_exhaustion_do_not_write_amendments() {
+        let mut registry = registry_with_commitment();
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            11,
+        );
+        registry
+            .commitments_by_id
+            .get_mut(&1)
+            .unwrap()
+            .current_version = u32::MAX;
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.amend_commitment(
+            1,
+            "x".into(),
+            "d".into(),
+            "c".into(),
+            20
+        )))
+        .is_err());
+        assert_eq!(registry.last_history_event_id, 2);
+        registry
+            .commitments_by_id
+            .get_mut(&1)
+            .unwrap()
+            .current_version = 1;
+        registry.last_history_event_id = u64::MAX;
+        let commitment_before = registry.commitments_by_id.get(&1).unwrap().clone();
+        let version_before = registry.get_commitment_version(1, 1).unwrap();
+        let history_before = registry.history_events.get(&2).unwrap().clone();
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.amend_commitment(
+            1,
+            "Second".into(),
+            "d".into(),
+            "c".into(),
+            20
+        )))
+        .is_err());
+        assert_eq!(
+            registry.commitments_by_id.get(&1).unwrap().current_version,
+            1
+        );
+        assert!(registry.get_commitment_version(1, 2).is_none());
+        assert_eq!(registry.commitments_by_id.get(&1), Some(&commitment_before));
+        assert_eq!(registry.get_commitment_version(1, 1), Some(version_before));
+        assert_eq!(registry.history_events.get(&2), Some(&history_before));
+        assert_eq!(registry.last_commitment_id, 1);
+        assert_eq!(registry.last_history_event_id, u64::MAX);
+        assert!(!registry.history_events.contains_key(&u64::MAX));
+    }
+
+    #[test]
+    fn version_pagination_handles_cursors_empty_and_invalid_limits() {
+        let mut registry = registry_with_commitment();
+        for (time, title) in [(11, "Second"), (12, "Third"), (13, "Fourth")] {
+            set_registration_context(
+                "wallet.testnet",
+                "wallet.testnet",
+                NearToken::from_near(10),
+                time,
+            );
+            registry.amend_commitment(
+                1,
+                title.into(),
+                "Description".into(),
+                "Criteria".into(),
+                time + 10,
+            );
+        }
+        let first = registry.get_commitment_versions(1, None, Some(2));
+        assert_eq!(
+            first.versions.iter().map(|v| v.version).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert_eq!(first.next_cursor, Some(2));
+        let second = registry.get_commitment_versions(1, first.next_cursor, Some(2));
+        assert_eq!(
+            second
+                .versions
+                .iter()
+                .map(|v| v.version)
+                .collect::<Vec<_>>(),
+            vec![3, 4]
+        );
+        assert_eq!(second.next_cursor, None);
+        let final_empty = registry.get_commitment_versions(1, Some(4), Some(2));
+        assert!(final_empty.versions.is_empty());
+        assert_eq!(final_empty.next_cursor, None);
+        let empty = registry.get_commitment_versions(1, Some(1), Some(2));
+        assert_eq!(
+            empty.versions.iter().map(|v| v.version).collect::<Vec<_>>(),
+            vec![2, 3]
+        );
+        assert_eq!(empty.next_cursor, Some(3));
+        assert!(registry
+            .get_commitment_versions(999, None, Some(2))
+            .versions
+            .is_empty());
+        assert!(registry
+            .get_commitment_versions(1, Some(u32::MAX), Some(2))
+            .versions
+            .is_empty());
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| registry.get_commitment_versions(
+                1,
+                None,
+                Some(0)
+            )))
+            .is_err()
+        );
+    }
+
+    fn registry_with_commitment() -> MemeProofRegistry {
+        set_context();
+        let mut registry = MemeProofRegistry::new();
+        register_test_token(&mut registry);
+        set_registration_context(
+            "wallet.testnet",
+            "wallet.testnet",
+            NearToken::from_near(10),
+            10,
+        );
+        registry.create_commitment(
+            1,
+            "First".into(),
+            "Description".into(),
+            "Criteria".into(),
+            20,
+        );
+        registry
     }
 
     #[test]

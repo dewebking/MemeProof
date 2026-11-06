@@ -7,7 +7,8 @@ commitments, amendments, evidence references, review records, disputes, and
 history. Supabase may later index these records for search and feeds, but must
 be rebuildable from NEAR and must not decide canonical state. The first
 implementation stage exposes token registration, token reads, and commitment
-creation. Amendments, evidence, review, and dispute methods remain future stages.
+creation and creator-authorized amendments. Evidence, review, and dispute
+methods remain future stages.
 
 The contract is configured for NEAR testnet. `NetworkId` currently has only the
 `Testnet` variant, and the initializer records that configuration. NEAR
@@ -25,8 +26,9 @@ RPC before any deployment.
   the immediate calling contract. Registration does not assert official
   ownership or affiliation.
 - `CommitmentRecord` points to a registered token and creator. Immutable terms
-  live in numbered `CommitmentVersion` records. Creation writes version 1; a
-  future amendment must add a version and history event, never replace terms.
+  live in numbered `CommitmentVersion` records. Creation writes version 1 and
+  each creator-authorized amendment appends the next version and history event.
+
 - `EvidenceReference` stores only an opaque reference, a content hash, submitter,
   and timestamp. File contents and secrets stay off-chain.
 - `HistoryEvent` is designed as an append-only, globally sequenced event record
@@ -140,6 +142,14 @@ layout, then design and test a state-preserving migration for that version.
   failure, and refunds excess deposit to the predecessor.
 - `get_commitment` returns the commitment and current terms. Deadline expiry
   alone does not mark it failed, and no AI verdict is made by the contract.
+- `amend_commitment` requires the original creator's signer account, validates
+  the replacement terms and future deadline, and appends a sequential version.
+  It records signer and block time, writes `CommitmentAmended` history and a
+  NEP-297 `commitment_amended` event, and applies exact storage deposit,
+  rollback, and predecessor refund handling.
+- `get_commitment_version` retrieves one immutable version;
+  `get_commitment_versions` returns bounded cursor pages up to 50 versions.
+  Deadline passage never automatically marks a commitment failed.
 - An append-only registration history record and NEP-297-compatible event.
 - Testnet-only network type and versioned configuration.
 - Typed future record/event structures and persistent map layout.
@@ -148,5 +158,5 @@ layout, then design and test a state-preserving migration for that version.
 - Unit tests for initialization, trie-backed map persistence, IDs, validation,
   and Borsh/JSON serialization.
 
-Amendments, evidence submission, verification, reviews, disputes, and their
-history events remain unimplemented.
+Evidence submission, verification, reviews, disputes, and their history events
+remain unimplemented.
