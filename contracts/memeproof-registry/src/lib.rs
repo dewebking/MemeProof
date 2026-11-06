@@ -1,7 +1,7 @@
 use near_sdk::store::LookupMap;
 use near_sdk::{env, near, AccountId, BorshStorageKey, NearToken, Promise};
 
-pub const SCHEMA_VERSION: u16 = 3;
+pub const SCHEMA_VERSION: u16 = 4;
 pub const MAX_REVIEW_EXPLANATION_BYTES: usize = 4 * 1024;
 pub const MAX_TEXT_BYTES: usize = 16 * 1024;
 pub const MAX_METADATA_URI_BYTES: usize = 2 * 1024;
@@ -10,6 +10,12 @@ pub const MAX_COMMITMENT_DESCRIPTION_BYTES: usize = 4 * 1024;
 pub const MAX_COMMITMENT_CRITERIA_BYTES: usize = 8 * 1024;
 pub const MAX_PAGE_SIZE: u32 = 50;
 pub const DEFAULT_PAGE_SIZE: u32 = 20;
+pub const DISPUTE_RESPONSE_PERIOD_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
+pub const DISPUTE_RESOLVER_PERIOD_NS: u64 = 14 * 24 * 60 * 60 * 1_000_000_000;
+pub const DISPUTE_RESOLUTION_PERIOD_NS: u64 = 30 * 24 * 60 * 60 * 1_000_000_000;
+pub const MAX_DISPUTE_REASON_BYTES: usize = 4 * 1024;
+pub const MAX_DISPUTE_RESPONSE_BYTES: usize = 4 * 1024;
+pub const MAX_DISPUTE_RATIONALE_BYTES: usize = 4 * 1024;
 
 #[near(serializers = [borsh, json])]
 #[serde(rename_all = "snake_case")]
@@ -88,6 +94,90 @@ pub struct CommitmentVersionPage {
 
 #[near(serializers = [borsh, json])]
 #[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum DisputeTarget {
+    Commitment { commitment_id: u64, version: u32 },
+    Evidence { evidence_id: u64 },
+}
+
+#[near(serializers = [borsh, json])]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisputeStatus {
+    Open,
+    UnderReview,
+    Resolved,
+    Expired,
+}
+
+#[near(serializers = [borsh, json])]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DisputeDisposition {
+    Upheld,
+    Rejected,
+    Inconclusive,
+    Dismissed,
+}
+
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputeRecord {
+    pub id: u64,
+    pub target: DisputeTarget,
+    pub commitment_id: u64,
+    pub version: u32,
+    pub evidence_id: Option<u64>,
+    pub opener: AccountId,
+    pub affected_party: AccountId,
+    pub proposed_resolver: AccountId,
+    pub proposal_by: AccountId,
+    pub other_party_accepted: bool,
+    pub resolver_accepted: bool,
+    pub counterproposal_used: bool,
+    pub reason: String,
+    pub created_at_ns: u64,
+    pub response_deadline_ns: u64,
+    pub resolver_deadline_ns: u64,
+    pub resolution_deadline_ns: Option<u64>,
+    pub status: DisputeStatus,
+}
+
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputeResponse {
+    pub dispute_id: u64,
+    pub responder: AccountId,
+    pub response: String,
+    pub responded_at_ns: u64,
+}
+
+#[near(serializers = [borsh, json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputeResolutionRecord {
+    pub dispute_id: u64,
+    pub resolver: AccountId,
+    pub disposition: DisputeDisposition,
+    pub rationale: String,
+    pub resolved_at_ns: u64,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputePage {
+    pub records: Vec<DisputeRecord>,
+    pub next_cursor: Option<u64>,
+}
+
+#[near(serializers = [json])]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HistoryEventPage {
+    pub records: Vec<HistoryEvent>,
+    pub next_cursor: Option<u64>,
+}
+
+#[near(serializers = [borsh, json])]
+#[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HistoryEventKind {
     TokenRegistered {
@@ -109,8 +199,37 @@ pub enum HistoryEventKind {
         review_id: u64,
     },
     DisputeRaised {
-        commitment_id: u64,
         dispute_id: u64,
+        target: DisputeTarget,
+    },
+    DisputeResponded {
+        dispute_id: u64,
+    },
+    DisputeResolverProposed {
+        dispute_id: u64,
+        resolver: AccountId,
+        counterproposal: bool,
+    },
+    // Kept for v4 Borsh compatibility; new writes use the role-specific variants below.
+    DisputeResolverAccepted {
+        dispute_id: u64,
+    },
+    DisputeUnderReview {
+        dispute_id: u64,
+    },
+    DisputeResolved {
+        dispute_id: u64,
+    },
+    DisputeExpired {
+        dispute_id: u64,
+    },
+    DisputePartyAcceptedResolver {
+        dispute_id: u64,
+        resolver: AccountId,
+    },
+    DisputeNomineeAccepted {
+        dispute_id: u64,
+        resolver: AccountId,
     },
 }
 
@@ -305,6 +424,10 @@ enum StorageKey {
     EvidenceById,
     ReviewsById,
     ReviewByEvidenceAndReviewer,
+    DisputesById,
+    ActiveDisputesByTarget,
+    DisputeResponses,
+    DisputeResolutions,
 }
 
 #[near(contract_state)]
@@ -315,6 +438,7 @@ pub struct MemeProofRegistry {
     last_history_event_id: u64,
     last_evidence_id: u64,
     last_review_id: u64,
+    last_dispute_id: u64,
     tokens_by_id: LookupMap<u64, TokenRecord>,
     token_ids_by_identity: LookupMap<TokenIdentity, u64>,
     commitments_by_id: LookupMap<u64, CommitmentRecord>,
@@ -323,6 +447,10 @@ pub struct MemeProofRegistry {
     evidence_by_id: LookupMap<u64, EvidenceReference>,
     reviews_by_id: LookupMap<u64, ReviewRecord>,
     review_by_evidence_and_reviewer: LookupMap<(u64, AccountId), u64>,
+    disputes_by_id: LookupMap<u64, DisputeRecord>,
+    active_disputes_by_target: LookupMap<DisputeTarget, u64>,
+    dispute_responses: LookupMap<u64, DisputeResponse>,
+    dispute_resolutions: LookupMap<u64, DisputeResolutionRecord>,
 }
 
 impl Default for MemeProofRegistry {
@@ -341,6 +469,7 @@ impl Default for MemeProofRegistry {
             last_history_event_id: 0,
             last_evidence_id: 0,
             last_review_id: 0,
+            last_dispute_id: 0,
             tokens_by_id: LookupMap::new(StorageKey::TokensById),
             token_ids_by_identity: LookupMap::new(StorageKey::TokenIdsByIdentity),
             commitments_by_id: LookupMap::new(StorageKey::CommitmentsById),
@@ -351,6 +480,10 @@ impl Default for MemeProofRegistry {
             review_by_evidence_and_reviewer: LookupMap::new(
                 StorageKey::ReviewByEvidenceAndReviewer,
             ),
+            disputes_by_id: LookupMap::new(StorageKey::DisputesById),
+            active_disputes_by_target: LookupMap::new(StorageKey::ActiveDisputesByTarget),
+            dispute_responses: LookupMap::new(StorageKey::DisputeResponses),
+            dispute_resolutions: LookupMap::new(StorageKey::DisputeResolutions),
         }
     }
 }
@@ -364,6 +497,747 @@ impl MemeProofRegistry {
 
     pub fn get_config(&self) -> RegistryConfig {
         self.config.clone()
+    }
+
+    #[payable]
+    pub fn open_dispute(
+        &mut self,
+        target: DisputeTarget,
+        reason: String,
+        proposed_resolver: AccountId,
+    ) -> DisputeRecord {
+        validate_bounded_text(&reason, MAX_DISPUTE_REASON_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Dispute reason is invalid."));
+        let (commitment_id, version, evidence_id, affected_party) = match &target {
+            DisputeTarget::Commitment {
+                commitment_id,
+                version,
+            } => {
+                if !self.commitments_by_id.contains_key(commitment_id) {
+                    env::panic_str("Commitment does not exist.");
+                }
+                if !self
+                    .commitment_versions
+                    .contains_key(&(*commitment_id, *version))
+                {
+                    env::panic_str("Commitment or version does not exist.");
+                }
+                let commitment = self.commitments_by_id.get(commitment_id).unwrap();
+                (*commitment_id, *version, None, commitment.creator.clone())
+            }
+            DisputeTarget::Evidence { evidence_id } => {
+                let evidence = self
+                    .evidence_by_id
+                    .get(evidence_id)
+                    .unwrap_or_else(|| env::panic_str("Evidence does not exist."));
+                if !self.commitments_by_id.contains_key(&evidence.commitment_id)
+                    || !self
+                        .commitment_versions
+                        .contains_key(&(evidence.commitment_id, evidence.version))
+                {
+                    env::panic_str("Evidence commitment context does not exist.");
+                }
+                (
+                    evidence.commitment_id,
+                    evidence.version,
+                    Some(*evidence_id),
+                    evidence.submitter.clone(),
+                )
+            }
+        };
+        if self.active_disputes_by_target.contains_key(&target) {
+            env::panic_str("An active dispute already exists for this target.");
+        }
+        let opener = env::signer_account_id();
+        if opener == affected_party {
+            env::panic_str("A dispute cannot be opened by its affected party.");
+        }
+        if proposed_resolver == opener || proposed_resolver == affected_party {
+            env::panic_str("The resolver must be a third party.");
+        }
+        let now = env::block_timestamp();
+        let response_deadline_ns = now
+            .checked_add(DISPUTE_RESPONSE_PERIOD_NS)
+            .unwrap_or_else(|| env::panic_str("Dispute deadline overflowed."));
+        let resolver_deadline_ns = now
+            .checked_add(DISPUTE_RESOLVER_PERIOD_NS)
+            .unwrap_or_else(|| env::panic_str("Dispute deadline overflowed."));
+        let id = self
+            .last_dispute_id
+            .checked_add(1)
+            .unwrap_or_else(|| env::panic_str("Dispute ID space is exhausted."));
+        let previous_history = self.last_history_event_id;
+        let raised_event_id = self
+            .allocate_history_event_id()
+            .unwrap_or_else(|_| env::panic_str("History event ID space is exhausted."));
+        let proposed_event_id = self.allocate_history_event_id().unwrap_or_else(|_| {
+            self.last_history_event_id = previous_history;
+            env::panic_str("History event ID space is exhausted.")
+        });
+        let record = DisputeRecord {
+            id,
+            target: target.clone(),
+            commitment_id,
+            version,
+            evidence_id,
+            opener: opener.clone(),
+            affected_party,
+            proposed_resolver: proposed_resolver.clone(),
+            proposal_by: opener.clone(),
+            other_party_accepted: false,
+            resolver_accepted: false,
+            counterproposal_used: false,
+            reason,
+            created_at_ns: now,
+            response_deadline_ns,
+            resolver_deadline_ns,
+            resolution_deadline_ns: None,
+            status: DisputeStatus::Open,
+        };
+        let history = HistoryEvent {
+            id: raised_event_id,
+            actor: opener.clone(),
+            occurred_at_ns: now,
+            kind: HistoryEventKind::DisputeRaised {
+                dispute_id: id,
+                target: target.clone(),
+            },
+        };
+        let proposal_history = HistoryEvent {
+            id: proposed_event_id,
+            actor: opener.clone(),
+            occurred_at_ns: now,
+            kind: HistoryEventKind::DisputeResolverProposed {
+                dispute_id: id,
+                resolver: proposed_resolver.clone(),
+                counterproposal: false,
+            },
+        };
+        let before = env::storage_usage();
+        self.disputes_by_id.insert(id, record.clone());
+        self.active_disputes_by_target.insert(target.clone(), id);
+        self.history_events.insert(raised_event_id, history);
+        self.history_events
+            .insert(proposed_event_id, proposal_history);
+        self.disputes_by_id.flush();
+        self.active_disputes_by_target.flush();
+        self.history_events.flush();
+        let required = match storage_cost_for_growth(before, env::storage_usage()) {
+            Some(value) => value,
+            None => {
+                self.disputes_by_id.remove(&id);
+                self.active_disputes_by_target.remove(&target);
+                self.history_events.remove(&raised_event_id);
+                self.history_events.remove(&proposed_event_id);
+                self.disputes_by_id.flush();
+                self.active_disputes_by_target.flush();
+                self.history_events.flush();
+                self.last_history_event_id = previous_history;
+                env::panic_str("Dispute storage accounting failed.");
+            }
+        };
+        let attached = env::attached_deposit().as_yoctonear();
+        if attached < required {
+            self.disputes_by_id.remove(&id);
+            self.active_disputes_by_target.remove(&target);
+            self.history_events.remove(&raised_event_id);
+            self.history_events.remove(&proposed_event_id);
+            self.disputes_by_id.flush();
+            self.active_disputes_by_target.flush();
+            self.history_events.flush();
+            self.last_history_event_id = previous_history;
+            env::panic_str("Attached deposit does not cover dispute storage.");
+        }
+        self.last_dispute_id = id;
+        refund_excess(attached - required);
+        emit_dispute_event(
+            "dispute_raised",
+            near_sdk::serde_json::json!({
+                "event_id": raised_event_id, "dispute_id": id, "actor": opener, "target": target,
+                "commitment_id": commitment_id, "version": version, "evidence_id": evidence_id,
+                "proposed_resolver": proposed_resolver, "created_at_ns": now
+            }),
+        );
+        emit_dispute_event(
+            "dispute_resolver_proposed",
+            near_sdk::serde_json::json!({
+                "event_id": proposed_event_id, "dispute_id": id, "actor": opener,
+                "resolver": proposed_resolver, "counterproposal": false, "occurred_at_ns": now
+            }),
+        );
+        record
+    }
+
+    #[payable]
+    pub fn respond_to_dispute(&mut self, dispute_id: u64, response: String) -> DisputeResponse {
+        validate_bounded_text(&response, MAX_DISPUTE_RESPONSE_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Dispute response is invalid."));
+        let mut dispute = self
+            .disputes_by_id
+            .get(&dispute_id)
+            .cloned()
+            .unwrap_or_else(|| env::panic_str("Dispute does not exist."));
+        let responder = env::signer_account_id();
+        let now = env::block_timestamp();
+        if !matches!(
+            dispute.status,
+            DisputeStatus::Open | DisputeStatus::UnderReview
+        ) || now >= dispute.response_deadline_ns
+        {
+            env::panic_str("Dispute response period has ended.");
+        }
+        if responder != dispute.affected_party {
+            env::panic_str("Only the affected party may respond.");
+        }
+        if self.dispute_responses.contains_key(&dispute_id) {
+            env::panic_str("A response has already been recorded.");
+        }
+        let previous_history = self.last_history_event_id;
+        let event_id = self
+            .allocate_history_event_id()
+            .unwrap_or_else(|_| env::panic_str("History event ID space is exhausted."));
+        let record = DisputeResponse {
+            dispute_id,
+            responder: responder.clone(),
+            response,
+            responded_at_ns: now,
+        };
+        let history = HistoryEvent {
+            id: event_id,
+            actor: responder.clone(),
+            occurred_at_ns: now,
+            kind: HistoryEventKind::DisputeResponded { dispute_id },
+        };
+        let before = env::storage_usage();
+        self.dispute_responses.insert(dispute_id, record.clone());
+        self.history_events.insert(event_id, history);
+        self.dispute_responses.flush();
+        self.history_events.flush();
+        let required = match storage_cost_for_growth(before, env::storage_usage()) {
+            Some(value) => value,
+            None => {
+                self.dispute_responses.remove(&dispute_id);
+                self.history_events.remove(&event_id);
+                self.dispute_responses.flush();
+                self.history_events.flush();
+                self.last_history_event_id = previous_history;
+                env::panic_str("Dispute response storage accounting failed.");
+            }
+        };
+        let attached = env::attached_deposit().as_yoctonear();
+        if attached < required {
+            self.dispute_responses.remove(&dispute_id);
+            self.history_events.remove(&event_id);
+            self.dispute_responses.flush();
+            self.history_events.flush();
+            self.last_history_event_id = previous_history;
+            env::panic_str("Attached deposit does not cover dispute response storage.");
+        }
+        refund_excess(attached - required);
+        emit_dispute_event(
+            "dispute_responded",
+            near_sdk::serde_json::json!({ "event_id": event_id, "dispute_id": dispute_id, "actor": responder, "responded_at_ns": now }),
+        );
+        record
+    }
+
+    #[payable]
+    pub fn counterpropose_dispute_resolver(
+        &mut self,
+        dispute_id: u64,
+        resolver: AccountId,
+    ) -> DisputeRecord {
+        let mut dispute = self
+            .disputes_by_id
+            .get(&dispute_id)
+            .cloned()
+            .unwrap_or_else(|| env::panic_str("Dispute does not exist."));
+        let actor = env::signer_account_id();
+        let now = env::block_timestamp();
+        if dispute.status != DisputeStatus::Open || now >= dispute.resolver_deadline_ns {
+            env::panic_str("Resolver agreement period has ended.");
+        }
+        if dispute.counterproposal_used {
+            env::panic_str("The counterproposal has already been used.");
+        }
+        let expected = if dispute.proposal_by == dispute.opener {
+            &dispute.affected_party
+        } else {
+            &dispute.opener
+        };
+        if &actor != expected {
+            env::panic_str("Only the other disputing party may counterpropose.");
+        }
+        if resolver == dispute.opener || resolver == dispute.affected_party {
+            env::panic_str("The resolver must be a third party.");
+        }
+        let old = dispute.clone();
+        let previous_history = self.last_history_event_id;
+        dispute.proposed_resolver = resolver.clone();
+        dispute.proposal_by = actor.clone();
+        dispute.other_party_accepted = false;
+        dispute.resolver_accepted = false;
+        dispute.counterproposal_used = true;
+        let event_id = self
+            .allocate_history_event_id()
+            .unwrap_or_else(|_| env::panic_str("History event ID space is exhausted."));
+        let history = HistoryEvent {
+            id: event_id,
+            actor: actor.clone(),
+            occurred_at_ns: now,
+            kind: HistoryEventKind::DisputeResolverProposed {
+                dispute_id,
+                resolver: resolver.clone(),
+                counterproposal: true,
+            },
+        };
+        let before = env::storage_usage();
+        self.disputes_by_id.insert(dispute_id, dispute.clone());
+        self.history_events.insert(event_id, history);
+        self.disputes_by_id.flush();
+        self.history_events.flush();
+        let required = match storage_cost_for_growth(before, env::storage_usage()) {
+            Some(value) => value,
+            None => {
+                self.disputes_by_id.insert(dispute_id, old.clone());
+                self.history_events.remove(&event_id);
+                self.disputes_by_id.flush();
+                self.history_events.flush();
+                self.last_history_event_id = previous_history;
+                env::panic_str("Resolver proposal storage accounting failed.");
+            }
+        };
+        let attached = env::attached_deposit().as_yoctonear();
+        if attached < required {
+            self.disputes_by_id.insert(dispute_id, old);
+            self.history_events.remove(&event_id);
+            self.disputes_by_id.flush();
+            self.history_events.flush();
+            self.last_history_event_id = previous_history;
+            env::panic_str("Attached deposit does not cover resolver proposal storage.");
+        }
+        refund_excess(attached - required);
+        emit_dispute_event(
+            "dispute_resolver_proposed",
+            near_sdk::serde_json::json!({ "event_id": event_id, "dispute_id": dispute_id, "actor": actor, "resolver": resolver, "counterproposal": true, "occurred_at_ns": now }),
+        );
+        dispute
+    }
+
+    #[payable]
+    pub fn accept_dispute_resolver(&mut self, dispute_id: u64) -> DisputeRecord {
+        let mut dispute = self
+            .disputes_by_id
+            .get(&dispute_id)
+            .cloned()
+            .unwrap_or_else(|| env::panic_str("Dispute does not exist."));
+        let actor = env::signer_account_id();
+        let now = env::block_timestamp();
+        if dispute.status != DisputeStatus::Open || now >= dispute.resolver_deadline_ns {
+            env::panic_str("Resolver agreement period has ended.");
+        }
+        let expected = if dispute.proposal_by == dispute.opener {
+            &dispute.affected_party
+        } else {
+            &dispute.opener
+        };
+        if &actor != expected {
+            env::panic_str("Only the other disputing party may accept the resolver.");
+        }
+        if dispute.other_party_accepted {
+            env::panic_str("The resolver proposal was already accepted.");
+        }
+        dispute.other_party_accepted = true;
+        self.store_dispute_transition(dispute_id, dispute, actor, now, false)
+    }
+
+    #[payable]
+    pub fn accept_dispute_appointment(&mut self, dispute_id: u64) -> DisputeRecord {
+        let mut dispute = self
+            .disputes_by_id
+            .get(&dispute_id)
+            .cloned()
+            .unwrap_or_else(|| env::panic_str("Dispute does not exist."));
+        let actor = env::signer_account_id();
+        let now = env::block_timestamp();
+        if dispute.status != DisputeStatus::Open || now >= dispute.resolver_deadline_ns {
+            env::panic_str("Resolver agreement period has ended.");
+        }
+        if actor != dispute.proposed_resolver {
+            env::panic_str("Only the proposed resolver may accept the appointment.");
+        }
+        if dispute.resolver_accepted {
+            env::panic_str("Resolver appointment was already accepted.");
+        }
+        dispute.resolver_accepted = true;
+        self.store_dispute_transition(dispute_id, dispute, actor, now, true)
+    }
+
+    fn store_dispute_transition(
+        &mut self,
+        dispute_id: u64,
+        mut dispute: DisputeRecord,
+        actor: AccountId,
+        now: u64,
+        resolver_acceptance: bool,
+    ) -> DisputeRecord {
+        let old = self.disputes_by_id.get(&dispute_id).cloned().unwrap();
+        let previous_history = self.last_history_event_id;
+        let under_review_deadline = if dispute.other_party_accepted && dispute.resolver_accepted {
+            Some(
+                now.checked_add(DISPUTE_RESOLUTION_PERIOD_NS)
+                    .unwrap_or_else(|| env::panic_str("Dispute deadline overflowed.")),
+            )
+        } else {
+            None
+        };
+        let accepted_event = self
+            .allocate_history_event_id()
+            .unwrap_or_else(|_| env::panic_str("History event ID space is exhausted."));
+        let accepted_kind = if resolver_acceptance {
+            HistoryEventKind::DisputeNomineeAccepted {
+                dispute_id,
+                resolver: dispute.proposed_resolver.clone(),
+            }
+        } else {
+            HistoryEventKind::DisputePartyAcceptedResolver {
+                dispute_id,
+                resolver: dispute.proposed_resolver.clone(),
+            }
+        };
+        let mut events = vec![(
+            accepted_event,
+            HistoryEvent {
+                id: accepted_event,
+                actor: actor.clone(),
+                occurred_at_ns: now,
+                kind: accepted_kind,
+            },
+        )];
+        if let Some(deadline) = under_review_deadline {
+            dispute.status = DisputeStatus::UnderReview;
+            dispute.resolution_deadline_ns = Some(deadline);
+            let id = self.allocate_history_event_id().unwrap_or_else(|_| {
+                self.last_history_event_id = previous_history;
+                env::panic_str("History event ID space is exhausted.")
+            });
+            events.push((
+                id,
+                HistoryEvent {
+                    id,
+                    actor: actor.clone(),
+                    occurred_at_ns: now,
+                    kind: HistoryEventKind::DisputeUnderReview { dispute_id },
+                },
+            ));
+        }
+        let before = env::storage_usage();
+        self.disputes_by_id.insert(dispute_id, dispute.clone());
+        for (id, event) in &events {
+            self.history_events.insert(*id, event.clone());
+        }
+        self.disputes_by_id.flush();
+        self.history_events.flush();
+        let required = match storage_cost_for_growth(before, env::storage_usage()) {
+            Some(value) => value,
+            None => {
+                self.disputes_by_id.insert(dispute_id, old.clone());
+                for (id, _) in &events {
+                    self.history_events.remove(id);
+                }
+                self.disputes_by_id.flush();
+                self.history_events.flush();
+                self.last_history_event_id = previous_history;
+                env::panic_str("Resolver acceptance storage accounting failed.");
+            }
+        };
+        let attached = env::attached_deposit().as_yoctonear();
+        if attached < required {
+            self.disputes_by_id.insert(dispute_id, old);
+            for (id, _) in &events {
+                self.history_events.remove(id);
+            }
+            self.disputes_by_id.flush();
+            self.history_events.flush();
+            self.last_history_event_id = previous_history;
+            env::panic_str("Attached deposit does not cover resolver acceptance storage.");
+        }
+        refund_excess(attached - required);
+        emit_dispute_event(
+            if resolver_acceptance {
+                "dispute_resolver_accepted"
+            } else {
+                "dispute_resolver_agreed"
+            },
+            near_sdk::serde_json::json!({ "event_id": accepted_event, "dispute_id": dispute_id, "actor": actor, "resolver": dispute.proposed_resolver, "occurred_at_ns": now }),
+        );
+        if dispute.status == DisputeStatus::UnderReview {
+            emit_dispute_event(
+                "dispute_under_review",
+                near_sdk::serde_json::json!({ "event_id": events[1].0, "dispute_id": dispute_id, "actor": actor, "resolution_deadline_ns": dispute.resolution_deadline_ns }),
+            );
+        }
+        dispute
+    }
+
+    #[payable]
+    pub fn resolve_dispute(
+        &mut self,
+        dispute_id: u64,
+        disposition: DisputeDisposition,
+        rationale: String,
+    ) -> DisputeResolutionRecord {
+        validate_bounded_text(&rationale, MAX_DISPUTE_RATIONALE_BYTES)
+            .unwrap_or_else(|_| env::panic_str("Dispute rationale is invalid."));
+        let mut dispute = self
+            .disputes_by_id
+            .get(&dispute_id)
+            .cloned()
+            .unwrap_or_else(|| env::panic_str("Dispute does not exist."));
+        let resolver = env::signer_account_id();
+        let now = env::block_timestamp();
+        if dispute.status != DisputeStatus::UnderReview
+            || now >= dispute.resolution_deadline_ns.unwrap_or(0)
+        {
+            env::panic_str("Dispute is not open for resolution.");
+        }
+        if !self.dispute_responses.contains_key(&dispute_id) && now < dispute.response_deadline_ns {
+            env::panic_str("The response period is still open.");
+        }
+        if resolver != dispute.proposed_resolver
+            || !dispute.resolver_accepted
+            || !dispute.other_party_accepted
+        {
+            env::panic_str("Only the accepted resolver may resolve this dispute.");
+        }
+        let previous_history = self.last_history_event_id;
+        let event_id = self
+            .allocate_history_event_id()
+            .unwrap_or_else(|_| env::panic_str("History event ID space is exhausted."));
+        let record = DisputeResolutionRecord {
+            dispute_id,
+            resolver: resolver.clone(),
+            disposition,
+            rationale,
+            resolved_at_ns: now,
+        };
+        let history = HistoryEvent {
+            id: event_id,
+            actor: resolver.clone(),
+            occurred_at_ns: now,
+            kind: HistoryEventKind::DisputeResolved { dispute_id },
+        };
+        let old = dispute.clone();
+        dispute.status = DisputeStatus::Resolved;
+        let before = env::storage_usage();
+        self.disputes_by_id.insert(dispute_id, dispute.clone());
+        self.dispute_resolutions.insert(dispute_id, record.clone());
+        self.active_disputes_by_target.remove(&dispute.target);
+        self.history_events.insert(event_id, history);
+        self.disputes_by_id.flush();
+        self.dispute_resolutions.flush();
+        self.active_disputes_by_target.flush();
+        self.history_events.flush();
+        let required = match storage_cost_for_growth(before, env::storage_usage()) {
+            Some(value) => value,
+            None => {
+                self.disputes_by_id.insert(dispute_id, old);
+                self.dispute_resolutions.remove(&dispute_id);
+                self.active_disputes_by_target
+                    .insert(dispute.target.clone(), dispute_id);
+                self.history_events.remove(&event_id);
+                self.disputes_by_id.flush();
+                self.dispute_resolutions.flush();
+                self.active_disputes_by_target.flush();
+                self.history_events.flush();
+                self.last_history_event_id = previous_history;
+                env::panic_str("Dispute resolution storage accounting failed.");
+            }
+        };
+        let attached = env::attached_deposit().as_yoctonear();
+        if attached < required {
+            self.disputes_by_id.insert(dispute_id, old);
+            self.dispute_resolutions.remove(&dispute_id);
+            self.active_disputes_by_target
+                .insert(dispute.target.clone(), dispute_id);
+            self.history_events.remove(&event_id);
+            self.disputes_by_id.flush();
+            self.dispute_resolutions.flush();
+            self.active_disputes_by_target.flush();
+            self.history_events.flush();
+            self.last_history_event_id = previous_history;
+            env::panic_str("Attached deposit does not cover dispute resolution storage.");
+        }
+        refund_excess(attached - required);
+        emit_dispute_event(
+            "dispute_resolved",
+            near_sdk::serde_json::json!({ "event_id": event_id, "dispute_id": dispute_id, "actor": resolver, "disposition": disposition, "resolved_at_ns": now }),
+        );
+        record
+    }
+
+    #[payable]
+    pub fn expire_dispute(&mut self, dispute_id: u64) -> DisputeRecord {
+        let mut dispute = self
+            .disputes_by_id
+            .get(&dispute_id)
+            .cloned()
+            .unwrap_or_else(|| env::panic_str("Dispute does not exist."));
+        let now = env::block_timestamp();
+        let expired = match dispute.status {
+            DisputeStatus::Open => now >= dispute.resolver_deadline_ns,
+            DisputeStatus::UnderReview => now >= dispute.resolution_deadline_ns.unwrap_or(u64::MAX),
+            DisputeStatus::Resolved | DisputeStatus::Expired => false,
+        };
+        if !expired {
+            env::panic_str("Dispute has not reached its expiry deadline.");
+        }
+        let actor = env::signer_account_id();
+        let old = dispute.clone();
+        let previous_history = self.last_history_event_id;
+        let event_id = self
+            .allocate_history_event_id()
+            .unwrap_or_else(|_| env::panic_str("History event ID space is exhausted."));
+        dispute.status = DisputeStatus::Expired;
+        let history = HistoryEvent {
+            id: event_id,
+            actor: actor.clone(),
+            occurred_at_ns: now,
+            kind: HistoryEventKind::DisputeExpired { dispute_id },
+        };
+        let before = env::storage_usage();
+        self.disputes_by_id.insert(dispute_id, dispute.clone());
+        self.active_disputes_by_target.remove(&dispute.target);
+        self.history_events.insert(event_id, history);
+        self.disputes_by_id.flush();
+        self.active_disputes_by_target.flush();
+        self.history_events.flush();
+        let required = match storage_cost_for_growth(before, env::storage_usage()) {
+            Some(value) => value,
+            None => {
+                self.disputes_by_id.insert(dispute_id, old);
+                self.active_disputes_by_target
+                    .insert(dispute.target.clone(), dispute_id);
+                self.history_events.remove(&event_id);
+                self.disputes_by_id.flush();
+                self.active_disputes_by_target.flush();
+                self.history_events.flush();
+                self.last_history_event_id = previous_history;
+                env::panic_str("Dispute expiry storage accounting failed.");
+            }
+        };
+        let attached = env::attached_deposit().as_yoctonear();
+        if attached < required {
+            self.disputes_by_id.insert(dispute_id, old);
+            self.active_disputes_by_target
+                .insert(dispute.target.clone(), dispute_id);
+            self.history_events.remove(&event_id);
+            self.disputes_by_id.flush();
+            self.active_disputes_by_target.flush();
+            self.history_events.flush();
+            self.last_history_event_id = previous_history;
+            env::panic_str("Attached deposit does not cover dispute expiry storage.");
+        }
+        refund_excess(attached - required);
+        emit_dispute_event(
+            "dispute_expired",
+            near_sdk::serde_json::json!({ "event_id": event_id, "dispute_id": dispute_id, "actor": actor, "expired_at_ns": now }),
+        );
+        dispute
+    }
+
+    pub fn get_dispute(&self, dispute_id: u64) -> Option<DisputeRecord> {
+        self.disputes_by_id.get(&dispute_id).cloned()
+    }
+    pub fn get_dispute_response(&self, dispute_id: u64) -> Option<DisputeResponse> {
+        self.dispute_responses.get(&dispute_id).cloned()
+    }
+    pub fn get_dispute_resolution(&self, dispute_id: u64) -> Option<DisputeResolutionRecord> {
+        self.dispute_resolutions.get(&dispute_id).cloned()
+    }
+    pub fn get_disputes(&self, after_id: Option<u64>, limit: Option<u32>) -> DisputePage {
+        self.dispute_page(None, None, after_id, limit)
+    }
+    pub fn get_disputes_by_commitment(
+        &self,
+        commitment_id: u64,
+        after_id: Option<u64>,
+        limit: Option<u32>,
+    ) -> DisputePage {
+        self.dispute_page(Some(commitment_id), None, after_id, limit)
+    }
+    pub fn get_disputes_by_evidence(
+        &self,
+        evidence_id: u64,
+        after_id: Option<u64>,
+        limit: Option<u32>,
+    ) -> DisputePage {
+        self.dispute_page(None, Some(evidence_id), after_id, limit)
+    }
+    fn dispute_page(
+        &self,
+        commitment_id: Option<u64>,
+        evidence_id: Option<u64>,
+        after_id: Option<u64>,
+        limit: Option<u32>,
+    ) -> DisputePage {
+        let limit = checked_page_limit(limit);
+        let Some(mut id) = after_id.unwrap_or(0).checked_add(1) else {
+            return DisputePage {
+                records: vec![],
+                next_cursor: None,
+            };
+        };
+        let mut records = Vec::new();
+        let mut scanned = 0;
+        let mut last = None;
+        while id <= self.last_dispute_id && scanned < limit {
+            if let Some(item) = self.disputes_by_id.get(&id) {
+                if commitment_id.is_none_or(|v| v == item.commitment_id)
+                    && evidence_id.is_none_or(|v| Some(v) == item.evidence_id)
+                {
+                    records.push(item.clone());
+                }
+            }
+            scanned += 1;
+            last = Some(id);
+            let Some(next) = id.checked_add(1) else { break };
+            id = next;
+        }
+        DisputePage {
+            records,
+            next_cursor: (id <= self.last_dispute_id).then_some(last).flatten(),
+        }
+    }
+
+    pub fn get_history_events(
+        &self,
+        after_id: Option<u64>,
+        limit: Option<u32>,
+    ) -> HistoryEventPage {
+        let limit = checked_page_limit(limit);
+        let Some(mut id) = after_id.unwrap_or(0).checked_add(1) else {
+            return HistoryEventPage {
+                records: vec![],
+                next_cursor: None,
+            };
+        };
+        let mut records = Vec::new();
+        let mut scanned = 0;
+        let mut last = None;
+        while id <= self.last_history_event_id && scanned < limit {
+            if let Some(item) = self.history_events.get(&id) {
+                records.push(item.clone());
+            }
+            scanned += 1;
+            last = Some(id);
+            let Some(next) = id.checked_add(1) else { break };
+            id = next;
+        }
+        HistoryEventPage {
+            records,
+            next_cursor: (id <= self.last_history_event_id).then_some(last).flatten(),
+        }
     }
 
     pub fn get_commitment(&self, commitment_id: u64) -> Option<CommitmentWithCurrentVersion> {
@@ -1173,6 +2047,38 @@ fn checked_storage_increase(before: u64, after: u64) -> Option<u64> {
 
 fn checked_storage_cost(byte_cost: u128, storage_increase: u64) -> Option<u128> {
     byte_cost.checked_mul(u128::from(storage_increase))
+}
+
+fn storage_cost_for_growth(before: u64, after: u64) -> Option<u128> {
+    let increase = after.saturating_sub(before);
+    checked_storage_cost(env::storage_byte_cost().as_yoctonear(), increase)
+}
+
+fn refund_excess(amount: u128) {
+    if amount > 0 {
+        Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(amount));
+    }
+}
+
+fn checked_page_limit(limit: Option<u32>) -> u32 {
+    let limit = limit.unwrap_or(DEFAULT_PAGE_SIZE);
+    assert!(
+        (1..=MAX_PAGE_SIZE).contains(&limit),
+        "Page limit must be between 1 and {MAX_PAGE_SIZE}."
+    );
+    limit
+}
+
+fn emit_dispute_event(event_name: &str, data: near_sdk::serde_json::Value) {
+    let event = near_sdk::serde_json::json!({
+        "standard": "memeproof",
+        "version": "1.0.0",
+        "event": event_name,
+        "data": [data]
+    });
+    let json = near_sdk::serde_json::to_string(&event)
+        .unwrap_or_else(|_| env::panic_str("Dispute event serialization failed."));
+    env::log_str(&format!("EVENT_JSON:{json}"));
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2868,6 +3774,849 @@ mod tests {
             .get_tokens(Some(u64::MAX), Some(2))
             .records
             .is_empty());
+    }
+
+    fn dispute_call(registry_signer: &str, at: u64, deposit: NearToken) {
+        set_registration_context("caller.testnet", registry_signer, deposit, at);
+    }
+
+    fn dispute_call_from(predecessor: &str, signer: &str, at: u64, deposit: NearToken) {
+        set_registration_context(predecessor, signer, deposit, at);
+    }
+
+    fn assert_dispute_excess_refund(predecessor: &str, attached: NearToken, before: u64) {
+        let increase = env::storage_usage().saturating_sub(before);
+        let required = checked_storage_cost(env::storage_byte_cost().as_yoctonear(), increase)
+            .expect("storage cost should fit");
+        let expected_refund = attached.as_yoctonear() - required;
+        assert!(expected_refund > 0);
+        assert!(near_sdk::test_utils::get_created_receipts()
+            .iter()
+            .any(|receipt| {
+                receipt.receiver_id == predecessor.parse::<AccountId>().unwrap()
+                    && receipt.actions.iter().any(|action| {
+                        matches!(
+                            action,
+                            near_sdk::mock::MockAction::Transfer { deposit, .. }
+                                if deposit.as_yoctonear() == expected_refund
+                        )
+                    })
+            }));
+    }
+
+    fn assert_dispute_write_rolls_back<F>(
+        registry: &mut MemeProofRegistry,
+        target: &DisputeTarget,
+        signer: &str,
+        at: u64,
+        write: F,
+    ) where
+        F: FnOnce(&mut MemeProofRegistry),
+    {
+        let before_dispute = registry.get_dispute(1).unwrap();
+        let before_history = registry.last_history_event_id;
+        let before_storage = env::storage_usage();
+        dispute_call_from(
+            "short-payer.testnet",
+            signer,
+            at,
+            NearToken::from_yoctonear(1),
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| write(registry))).is_err());
+        assert_eq!(registry.get_dispute(1), Some(before_dispute));
+        assert_eq!(registry.last_history_event_id, before_history);
+        assert_eq!(registry.last_dispute_id, 1);
+        assert_eq!(env::storage_usage(), before_storage);
+        assert_eq!(registry.active_disputes_by_target.get(target), Some(&1));
+    }
+
+    fn open_commitment_dispute(registry: &mut MemeProofRegistry, at: u64) -> DisputeRecord {
+        dispute_call("challenger.testnet", at, NearToken::from_near(10));
+        registry.open_dispute(
+            DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 1,
+            },
+            "The criteria were not met".into(),
+            "resolver.testnet".parse().unwrap(),
+        )
+    }
+
+    #[test]
+    fn dispute_lifecycle_enforces_authority_and_keeps_commitment_unchanged() {
+        let mut registry = registry_with_commitment();
+        let dispute = open_commitment_dispute(&mut registry, 100);
+        assert_eq!(dispute.status, DisputeStatus::Open);
+        assert_eq!(dispute.affected_party, "wallet.testnet".parse().unwrap());
+
+        dispute_call("wallet.testnet", 200, NearToken::from_near(10));
+        let response = registry.respond_to_dispute(1, "I disagree with the challenge".into());
+        assert_eq!(response.responder, "wallet.testnet".parse().unwrap());
+        dispute_call("wallet.testnet", 201, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(
+            || registry.respond_to_dispute(1, "Duplicate".into())
+        ))
+        .is_err());
+        dispute_call("challenger.testnet", 202, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(
+            || registry.respond_to_dispute(1, "Wrong actor".into())
+        ))
+        .is_err());
+
+        dispute_call("reviewer.testnet", 300, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.accept_dispute_appointment(1))).is_err());
+        dispute_call("resolver.testnet", 301, NearToken::from_near(10));
+        registry.accept_dispute_appointment(1);
+        assert_eq!(registry.get_dispute(1).unwrap().status, DisputeStatus::Open);
+        dispute_call("wallet.testnet", 302, NearToken::from_near(10));
+        let under_review = registry.accept_dispute_resolver(1);
+        assert_eq!(under_review.status, DisputeStatus::UnderReview);
+        assert_eq!(
+            under_review.resolution_deadline_ns,
+            Some(302 + DISPUTE_RESOLUTION_PERIOD_NS)
+        );
+
+        dispute_call("wallet.testnet", 400, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.resolve_dispute(
+            1,
+            DisputeDisposition::Rejected,
+            "No".into()
+        )))
+        .is_err());
+        dispute_call("resolver.testnet", 401, NearToken::from_near(10));
+        let result = registry.resolve_dispute(
+            1,
+            DisputeDisposition::Inconclusive,
+            "Evidence is insufficient".into(),
+        );
+        assert_eq!(result.resolver, "resolver.testnet".parse().unwrap());
+        assert_eq!(
+            registry.get_dispute(1).unwrap().status,
+            DisputeStatus::Resolved
+        );
+        assert_eq!(registry.get_dispute_resolution(1), Some(result));
+        let resolution_event = near_sdk::test_utils::get_logs()
+            .iter()
+            .filter(|line| line.starts_with("EVENT_JSON:"))
+            .filter_map(|line| {
+                near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(
+                    line.trim_start_matches("EVENT_JSON:"),
+                )
+                .ok()
+            })
+            .find(|event| event["event"] == "dispute_resolved")
+            .unwrap();
+        assert_eq!(resolution_event["data"][0]["disposition"], "inconclusive");
+        assert_eq!(
+            registry.get_commitment(1).unwrap().current_version.version,
+            1
+        );
+        assert!(registry
+            .active_disputes_by_target
+            .get(&DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 1
+            })
+            .is_none());
+        assert!(registry
+            .get_history_events(None, Some(50))
+            .records
+            .iter()
+            .any(|event| matches!(
+                &event.kind,
+                HistoryEventKind::DisputeResolved { dispute_id: 1 }
+            )));
+    }
+
+    #[test]
+    fn counterproposal_invalidates_both_acceptances_and_is_limited_to_one() {
+        let mut registry = registry_with_commitment();
+        open_commitment_dispute(&mut registry, 100);
+        dispute_call("resolver.testnet", 101, NearToken::from_near(10));
+        registry.accept_dispute_appointment(1);
+        dispute_call("wallet.testnet", 102, NearToken::from_near(10));
+        let countered =
+            registry.counterpropose_dispute_resolver(1, "resolver2.testnet".parse().unwrap());
+        assert!(!countered.other_party_accepted);
+        assert!(!countered.resolver_accepted);
+        assert!(countered.counterproposal_used);
+        dispute_call("wallet.testnet", 103, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(
+            || registry.counterpropose_dispute_resolver(1, "resolver3.testnet".parse().unwrap())
+        ))
+        .is_err());
+        dispute_call("resolver2.testnet", 104, NearToken::from_near(10));
+        registry.accept_dispute_appointment(1);
+        dispute_call("challenger.testnet", 105, NearToken::from_near(10));
+        assert_eq!(
+            registry.accept_dispute_resolver(1).status,
+            DisputeStatus::UnderReview
+        );
+        let history = registry.get_history_events(None, Some(50)).records;
+        assert!(history.iter().any(|entry| matches!(
+            &entry.kind,
+            HistoryEventKind::DisputeResolverProposed {
+                dispute_id: 1,
+                resolver,
+                counterproposal: false,
+            } if resolver == &"resolver.testnet".parse::<AccountId>().unwrap()
+        )));
+        assert!(history.iter().any(|entry| matches!(
+            &entry.kind,
+            HistoryEventKind::DisputeNomineeAccepted { dispute_id: 1, resolver }
+                if resolver == &"resolver.testnet".parse::<AccountId>().unwrap()
+        )));
+        assert!(history.iter().any(|entry| matches!(
+            &entry.kind,
+            HistoryEventKind::DisputeResolverProposed {
+                dispute_id: 1,
+                resolver,
+                counterproposal: true,
+            } if resolver == &"resolver2.testnet".parse::<AccountId>().unwrap()
+        )));
+        assert!(history.iter().any(|entry| matches!(
+            &entry.kind,
+            HistoryEventKind::DisputePartyAcceptedResolver { dispute_id: 1, resolver }
+                if resolver == &"resolver2.testnet".parse::<AccountId>().unwrap()
+        )));
+        assert!(history.iter().any(|entry| matches!(
+            &entry.kind,
+            HistoryEventKind::DisputeNomineeAccepted { dispute_id: 1, resolver }
+                if resolver == &"resolver2.testnet".parse::<AccountId>().unwrap()
+        )));
+    }
+
+    #[test]
+    fn evidence_dispute_derives_context_and_active_target_is_unique() {
+        let mut registry = registry_with_commitment();
+        dispute_call("submitter.testnet", 20, NearToken::from_near(10));
+        let evidence = registry.submit_evidence(
+            1,
+            1,
+            "https://example.org/evidence.json".into(),
+            "ab".repeat(32),
+        );
+        dispute_call("challenger.testnet", 30, NearToken::from_near(10));
+        let record = registry.open_dispute(
+            DisputeTarget::Evidence {
+                evidence_id: evidence.id,
+            },
+            "Evidence is inaccurate".into(),
+            "resolver.testnet".parse().unwrap(),
+        );
+        assert_eq!(record.commitment_id, evidence.commitment_id);
+        assert_eq!(record.version, evidence.version);
+        assert_eq!(record.affected_party, evidence.submitter);
+        dispute_call("another.testnet", 31, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.open_dispute(
+            DisputeTarget::Evidence {
+                evidence_id: evidence.id
+            },
+            "Duplicate challenge".into(),
+            "resolver2.testnet".parse().unwrap()
+        )))
+        .is_err());
+        assert_eq!(
+            registry
+                .get_reviews_by_evidence(evidence.id, None, Some(5))
+                .records
+                .len(),
+            0
+        );
+    }
+
+    #[test]
+    fn dispute_open_rejects_missing_targets_self_disputes_and_party_as_resolver() {
+        let mut registry = registry_with_commitment();
+        dispute_call("challenger.testnet", 100, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.open_dispute(
+            DisputeTarget::Commitment {
+                commitment_id: 99,
+                version: 1,
+            },
+            "Missing commitment".into(),
+            "resolver.testnet".parse().unwrap(),
+        )))
+        .is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.open_dispute(
+            DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 99,
+            },
+            "Missing version".into(),
+            "resolver.testnet".parse().unwrap(),
+        )))
+        .is_err());
+        dispute_call("wallet.testnet", 101, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.open_dispute(
+            DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 1,
+            },
+            "Self challenge".into(),
+            "resolver.testnet".parse().unwrap(),
+        )))
+        .is_err());
+        dispute_call("challenger.testnet", 102, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.open_dispute(
+            DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 1,
+            },
+            "Resolver is the affected party".into(),
+            "wallet.testnet".parse().unwrap(),
+        )))
+        .is_err());
+        assert_eq!(registry.last_dispute_id, 0);
+    }
+
+    #[test]
+    fn dispute_deadlines_are_enforced_at_exact_boundaries_and_expiry_has_no_disposition() {
+        let mut registry = registry_with_commitment();
+        let opened = open_commitment_dispute(&mut registry, 100);
+        dispute_call(
+            "wallet.testnet",
+            opened.response_deadline_ns,
+            NearToken::from_near(10),
+        );
+        assert!(catch_unwind(AssertUnwindSafe(
+            || registry.respond_to_dispute(1, "Too late".into())
+        ))
+        .is_err());
+        dispute_call(
+            "anyone.testnet",
+            opened.resolver_deadline_ns - 1,
+            NearToken::from_near(10),
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.expire_dispute(1))).is_err());
+        dispute_call(
+            "anyone.testnet",
+            opened.resolver_deadline_ns,
+            NearToken::from_near(10),
+        );
+        assert_eq!(registry.expire_dispute(1).status, DisputeStatus::Expired);
+        assert!(registry.get_dispute_resolution(1).is_none());
+        assert_eq!(
+            registry
+                .get_commitment(1)
+                .unwrap()
+                .commitment
+                .current_version,
+            1
+        );
+        dispute_call(
+            "challenger2.testnet",
+            opened.resolver_deadline_ns + 1,
+            NearToken::from_near(10),
+        );
+        assert_eq!(
+            registry
+                .open_dispute(
+                    DisputeTarget::Commitment {
+                        commitment_id: 1,
+                        version: 1,
+                    },
+                    "A later challenge".into(),
+                    "resolver2.testnet".parse().unwrap(),
+                )
+                .id,
+            2
+        );
+    }
+
+    #[test]
+    fn under_review_dispute_expires_without_resolver_action() {
+        let mut registry = registry_with_commitment();
+        open_commitment_dispute(&mut registry, 100);
+        dispute_call("wallet.testnet", 101, NearToken::from_near(10));
+        registry.accept_dispute_resolver(1);
+        dispute_call("resolver.testnet", 102, NearToken::from_near(10));
+        registry.accept_dispute_appointment(1);
+        dispute_call("resolver.testnet", 103, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.resolve_dispute(
+            1,
+            DisputeDisposition::Upheld,
+            "Response window is open".into()
+        )))
+        .is_err());
+        let deadline = registry
+            .get_dispute(1)
+            .unwrap()
+            .resolution_deadline_ns
+            .unwrap();
+        dispute_call("resolver.testnet", deadline, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.resolve_dispute(
+            1,
+            DisputeDisposition::Upheld,
+            "Late".into()
+        )))
+        .is_err());
+        dispute_call("anyone.testnet", deadline, NearToken::from_near(10));
+        assert_eq!(registry.expire_dispute(1).status, DisputeStatus::Expired);
+        assert!(registry.get_dispute_resolution(1).is_none());
+        assert!(registry
+            .get_dispute(1)
+            .unwrap()
+            .resolution_deadline_ns
+            .is_some());
+    }
+
+    #[test]
+    fn affected_party_can_respond_after_early_transition_to_under_review() {
+        let mut registry = registry_with_commitment();
+        open_commitment_dispute(&mut registry, 100);
+        dispute_call("resolver.testnet", 101, NearToken::from_near(10));
+        registry.accept_dispute_appointment(1);
+        dispute_call("wallet.testnet", 102, NearToken::from_near(10));
+        assert_eq!(
+            registry.accept_dispute_resolver(1).status,
+            DisputeStatus::UnderReview
+        );
+        dispute_call("wallet.testnet", 103, NearToken::from_near(10));
+        assert_eq!(
+            registry
+                .respond_to_dispute(1, "Response after appointment".into())
+                .responder,
+            "wallet.testnet".parse().unwrap()
+        );
+    }
+
+    #[test]
+    fn dispute_storage_shortfall_rolls_back_and_excess_refunds_predecessor() {
+        let mut registry = registry_with_commitment();
+        dispute_call("caller.testnet", 100, NearToken::from_yoctonear(1));
+        let before_storage = env::storage_usage();
+        let before_history = registry.last_history_event_id;
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.open_dispute(
+            DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 1
+            },
+            "Reason".into(),
+            "resolver.testnet".parse().unwrap()
+        )))
+        .is_err());
+        assert_eq!(registry.last_dispute_id, 0);
+        assert_eq!(registry.last_history_event_id, before_history);
+        assert_eq!(env::storage_usage(), before_storage);
+        assert!(registry.disputes_by_id.get(&1).is_none());
+
+        dispute_call("refund.testnet", 101, NearToken::from_near(10));
+        let before = env::storage_usage();
+        registry.open_dispute(
+            DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 1,
+            },
+            "Reason".into(),
+            "resolver.testnet".parse().unwrap(),
+        );
+        let required =
+            env::storage_byte_cost().as_yoctonear() * u128::from(env::storage_usage() - before);
+        let receipts = near_sdk::test_utils::get_created_receipts();
+        assert!(receipts.iter().any(|receipt| receipt.receiver_id == "refund.testnet".parse::<AccountId>().unwrap() && receipt.actions.iter().any(|action| matches!(action, near_sdk::mock::MockAction::Transfer { deposit, .. } if deposit.as_yoctonear() == NearToken::from_near(10).as_yoctonear() - required))));
+    }
+
+    #[test]
+    fn response_storage_shortfall_rolls_back_response_and_history() {
+        let mut registry = registry_with_commitment();
+        open_commitment_dispute(&mut registry, 100);
+        let previous_history = registry.last_history_event_id;
+        let before_storage = env::storage_usage();
+        dispute_call("wallet.testnet", 101, NearToken::from_yoctonear(1));
+        assert!(catch_unwind(AssertUnwindSafe(
+            || registry.respond_to_dispute(1, "Response".into())
+        ))
+        .is_err());
+        assert!(registry.get_dispute_response(1).is_none());
+        assert_eq!(registry.last_history_event_id, previous_history);
+        assert_eq!(env::storage_usage(), before_storage);
+    }
+
+    #[test]
+    fn multi_event_history_id_exhaustion_restores_staged_counters_and_state() {
+        let mut empty = registry_with_commitment();
+        empty.last_history_event_id = u64::MAX - 1;
+        let before_storage = env::storage_usage();
+        dispute_call("challenger.testnet", 100, NearToken::from_near(10));
+        assert!(catch_unwind(AssertUnwindSafe(|| empty.open_dispute(
+            DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 1,
+            },
+            "Reason".into(),
+            "resolver.testnet".parse().unwrap(),
+        )))
+        .is_err());
+        assert_eq!(empty.last_dispute_id, 0);
+        assert_eq!(empty.last_history_event_id, u64::MAX - 1);
+        assert_eq!(env::storage_usage(), before_storage);
+        assert!(empty.disputes_by_id.get(&1).is_none());
+        assert!(empty.history_events.get(&u64::MAX).is_none());
+
+        let mut registry = registry_with_commitment();
+        open_commitment_dispute(&mut registry, 100);
+        dispute_call("resolver.testnet", 101, NearToken::from_near(10));
+        registry.accept_dispute_appointment(1);
+        registry.last_history_event_id = u64::MAX - 1;
+        let target = DisputeTarget::Commitment {
+            commitment_id: 1,
+            version: 1,
+        };
+        assert_dispute_write_rolls_back(&mut registry, &target, "wallet.testnet", 102, |this| {
+            this.accept_dispute_resolver(1);
+        });
+        assert!(registry.history_events.get(&u64::MAX).is_none());
+    }
+
+    #[test]
+    fn resolver_actions_roll_back_short_deposits_and_refund_each_predecessor() {
+        let mut registry = registry_with_commitment();
+        open_commitment_dispute(&mut registry, 100);
+        let target = DisputeTarget::Commitment {
+            commitment_id: 1,
+            version: 1,
+        };
+
+        assert_dispute_write_rolls_back(&mut registry, &target, "resolver.testnet", 101, |this| {
+            this.accept_dispute_appointment(1);
+        });
+        let deposit = NearToken::from_near(10);
+        dispute_call_from("candidate-payer.testnet", "resolver.testnet", 102, deposit);
+        let before = env::storage_usage();
+        registry.accept_dispute_appointment(1);
+        assert_dispute_excess_refund("candidate-payer.testnet", deposit, before);
+        assert!(registry.get_dispute(1).unwrap().resolver_accepted);
+
+        assert_dispute_write_rolls_back(&mut registry, &target, "wallet.testnet", 103, |this| {
+            this.counterpropose_dispute_resolver(1, "resolver2.testnet".parse().unwrap());
+        });
+        let deposit = NearToken::from_near(10);
+        dispute_call_from("counter-payer.testnet", "wallet.testnet", 104, deposit);
+        let before = env::storage_usage();
+        let countered =
+            registry.counterpropose_dispute_resolver(1, "resolver2.testnet".parse().unwrap());
+        assert_dispute_excess_refund("counter-payer.testnet", deposit, before);
+        assert!(!countered.resolver_accepted);
+        assert!(!countered.other_party_accepted);
+        assert!(countered.counterproposal_used);
+
+        assert_dispute_write_rolls_back(
+            &mut registry,
+            &target,
+            "challenger.testnet",
+            105,
+            |this| {
+                this.accept_dispute_resolver(1);
+            },
+        );
+        let deposit = NearToken::from_near(10);
+        dispute_call_from("party-payer.testnet", "challenger.testnet", 106, deposit);
+        let before = env::storage_usage();
+        registry.accept_dispute_resolver(1);
+        assert_dispute_excess_refund("party-payer.testnet", deposit, before);
+        assert!(registry.get_dispute(1).unwrap().other_party_accepted);
+
+        assert_dispute_write_rolls_back(&mut registry, &target, "resolver2.testnet", 107, |this| {
+            this.accept_dispute_appointment(1);
+        });
+        let deposit = NearToken::from_near(10);
+        dispute_call_from("nominee-payer.testnet", "resolver2.testnet", 108, deposit);
+        let before = env::storage_usage();
+        assert_eq!(
+            registry.accept_dispute_appointment(1).status,
+            DisputeStatus::UnderReview
+        );
+        assert_dispute_excess_refund("nominee-payer.testnet", deposit, before);
+
+        let deposit = NearToken::from_near(10);
+        dispute_call_from("response-payer.testnet", "wallet.testnet", 109, deposit);
+        let before = env::storage_usage();
+        registry.respond_to_dispute(1, "Response before resolution".into());
+        assert_dispute_excess_refund("response-payer.testnet", deposit, before);
+
+        assert_dispute_write_rolls_back(&mut registry, &target, "resolver2.testnet", 110, |this| {
+            this.resolve_dispute(1, DisputeDisposition::Upheld, "Rationale".into());
+        });
+        assert!(registry.get_dispute_resolution(1).is_none());
+        let deposit = NearToken::from_near(10);
+        dispute_call_from(
+            "resolution-payer.testnet",
+            "resolver2.testnet",
+            111,
+            deposit,
+        );
+        let before = env::storage_usage();
+        registry.resolve_dispute(1, DisputeDisposition::Upheld, "Rationale".into());
+        assert_dispute_excess_refund("resolution-payer.testnet", deposit, before);
+        assert_eq!(
+            registry.get_dispute(1).unwrap().status,
+            DisputeStatus::Resolved
+        );
+        assert!(registry.active_disputes_by_target.get(&target).is_none());
+
+        let mut expiring = registry_with_commitment();
+        let opened = open_commitment_dispute(&mut expiring, 200);
+        let expiry_target = opened.target.clone();
+        let expiry_at = opened.resolver_deadline_ns + 1;
+        assert_dispute_write_rolls_back(
+            &mut expiring,
+            &expiry_target,
+            "anyone.testnet",
+            expiry_at,
+            |this| {
+                this.expire_dispute(1);
+            },
+        );
+        let deposit = NearToken::from_near(10);
+        dispute_call_from(
+            "expiry-payer.testnet",
+            "anyone.testnet",
+            expiry_at + 1,
+            deposit,
+        );
+        let before = env::storage_usage();
+        assert_eq!(expiring.expire_dispute(1).status, DisputeStatus::Expired);
+        assert_dispute_excess_refund("expiry-payer.testnet", deposit, before);
+        assert!(expiring
+            .active_disputes_by_target
+            .get(&expiry_target)
+            .is_none());
+    }
+
+    #[test]
+    fn dispute_pages_history_events_and_serialization_are_bounded_and_append_only() {
+        let mut registry = registry_with_commitment();
+        open_commitment_dispute(&mut registry, 100);
+        // A second exact target is distinct because it names a different version.
+        let mut version2 = registry.get_commitment_version(1, 1).unwrap();
+        version2.version = 2;
+        registry.commitment_versions.insert((1, 2), version2);
+        dispute_call("challenger2.testnet", 101, NearToken::from_near(10));
+        registry.open_dispute(
+            DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 2,
+            },
+            "Second target".into(),
+            "resolver2.testnet".parse().unwrap(),
+        );
+        let first = registry.get_disputes(None, Some(1));
+        assert_eq!(first.records[0].id, 1);
+        assert_eq!(first.next_cursor, Some(1));
+        let second = registry.get_disputes(first.next_cursor, Some(1));
+        assert_eq!(second.records[0].id, 2);
+        assert_eq!(second.next_cursor, None);
+        assert!(catch_unwind(AssertUnwindSafe(
+            || registry.get_disputes(None, Some(MAX_PAGE_SIZE + 1))
+        ))
+        .is_err());
+        let history = registry.get_history_events(None, Some(1));
+        assert_eq!(history.records.len(), 1);
+        assert_eq!(history.next_cursor, Some(1));
+        let json = near_sdk::serde_json::to_string(&registry.get_dispute(1).unwrap()).unwrap();
+        let decoded: DisputeRecord = near_sdk::serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, registry.get_dispute(1).unwrap());
+        let bytes = near_sdk::borsh::to_vec(&decoded).unwrap();
+        let from_bytes: DisputeRecord = near_sdk::borsh::from_slice(&bytes).unwrap();
+        assert_eq!(from_bytes, decoded);
+        let event = near_sdk::test_utils::get_logs()
+            .iter()
+            .filter(|line| line.starts_with("EVENT_JSON:"))
+            .filter_map(|line| {
+                near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(
+                    line.trim_start_matches("EVENT_JSON:"),
+                )
+                .ok()
+            })
+            .find(|event| event["event"] == "dispute_raised")
+            .unwrap();
+        assert_eq!(event["standard"], "memeproof");
+        assert_eq!(event["event"], "dispute_raised");
+        assert_eq!(event["data"][0]["target"]["commitment"]["version"], 2);
+        let proposal_event = near_sdk::test_utils::get_logs()
+            .iter()
+            .filter(|line| line.starts_with("EVENT_JSON:"))
+            .filter_map(|line| {
+                near_sdk::serde_json::from_str::<near_sdk::serde_json::Value>(
+                    line.trim_start_matches("EVENT_JSON:"),
+                )
+                .ok()
+            })
+            .find(|event| event["event"] == "dispute_resolver_proposed")
+            .unwrap();
+        assert_eq!(proposal_event["data"][0]["resolver"], "resolver2.testnet");
+        assert_eq!(proposal_event["data"][0]["counterproposal"], false);
+    }
+
+    #[test]
+    fn dispute_records_indexes_responses_resolutions_and_history_survive_reload() {
+        let active_target = DisputeTarget::Commitment {
+            commitment_id: 1,
+            version: 2,
+        };
+        let mut last_history_event_id = 0;
+        {
+            let mut registry = registry_with_commitment();
+            open_commitment_dispute(&mut registry, 100);
+
+            dispute_call("wallet.testnet", 101, NearToken::from_near(10));
+            registry.respond_to_dispute(1, "Persistent response".into());
+            dispute_call("resolver.testnet", 102, NearToken::from_near(10));
+            registry.accept_dispute_appointment(1);
+            dispute_call("wallet.testnet", 103, NearToken::from_near(10));
+            registry.counterpropose_dispute_resolver(1, "resolver2.testnet".parse().unwrap());
+            dispute_call("resolver2.testnet", 104, NearToken::from_near(10));
+            registry.accept_dispute_appointment(1);
+            dispute_call("challenger.testnet", 105, NearToken::from_near(10));
+            registry.accept_dispute_resolver(1);
+            dispute_call("resolver2.testnet", 106, NearToken::from_near(10));
+            registry.resolve_dispute(
+                1,
+                DisputeDisposition::Dismissed,
+                "Persistent resolution".into(),
+            );
+
+            dispute_call("wallet.testnet", 120, NearToken::from_near(10));
+            registry.amend_commitment(
+                1,
+                "Second version".into(),
+                "Description".into(),
+                "Criteria".into(),
+                200,
+            );
+            dispute_call("challenger2.testnet", 121, NearToken::from_near(10));
+            registry.open_dispute(
+                active_target.clone(),
+                "Active index survives".into(),
+                "resolver3.testnet".parse().unwrap(),
+            );
+            last_history_event_id = registry.last_history_event_id;
+        }
+
+        let disputes: LookupMap<u64, DisputeRecord> = LookupMap::new(StorageKey::DisputesById);
+        let active: LookupMap<DisputeTarget, u64> =
+            LookupMap::new(StorageKey::ActiveDisputesByTarget);
+        let responses: LookupMap<u64, DisputeResponse> =
+            LookupMap::new(StorageKey::DisputeResponses);
+        let resolutions: LookupMap<u64, DisputeResolutionRecord> =
+            LookupMap::new(StorageKey::DisputeResolutions);
+        let history: LookupMap<u64, HistoryEvent> = LookupMap::new(StorageKey::HistoryEvents);
+
+        let resolved = disputes.get(&1).unwrap().clone();
+        assert_eq!(resolved.status, DisputeStatus::Resolved);
+        assert_eq!(disputes.get(&2).unwrap().status, DisputeStatus::Open);
+        assert_eq!(active.get(&active_target), Some(&2));
+        assert!(active
+            .get(&DisputeTarget::Commitment {
+                commitment_id: 1,
+                version: 1,
+            })
+            .is_none());
+        let response = responses.get(&1).unwrap().clone();
+        let resolution = resolutions.get(&1).unwrap().clone();
+        assert_eq!(response.response, "Persistent response");
+        assert_eq!(resolution.disposition, DisputeDisposition::Dismissed);
+
+        let history_events = (1..=last_history_event_id)
+            .filter_map(|id| history.get(&id).cloned())
+            .collect::<Vec<_>>();
+        let proposal_events = history_events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    &event.kind,
+                    HistoryEventKind::DisputeResolverProposed { dispute_id: 1, .. }
+                )
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(proposal_events.len(), 2);
+        assert!(matches!(
+            &proposal_events[0].kind,
+            HistoryEventKind::DisputeResolverProposed {
+                resolver,
+                counterproposal: false,
+                ..
+            } if resolver == &"resolver.testnet".parse::<AccountId>().unwrap()
+        ));
+        assert!(matches!(
+            &proposal_events[1].kind,
+            HistoryEventKind::DisputeResolverProposed {
+                resolver,
+                counterproposal: true,
+                ..
+            } if resolver == &"resolver2.testnet".parse::<AccountId>().unwrap()
+        ));
+        assert!(history_events.iter().any(|event| matches!(
+            &event.kind,
+            HistoryEventKind::DisputePartyAcceptedResolver { dispute_id: 1, resolver }
+                if resolver == &"resolver2.testnet".parse::<AccountId>().unwrap()
+        )));
+        assert!(history_events.iter().any(|event| matches!(
+            &event.kind,
+            HistoryEventKind::DisputeNomineeAccepted { dispute_id: 1, resolver }
+                if resolver == &"resolver2.testnet".parse::<AccountId>().unwrap()
+        )));
+        for event in &history_events {
+            let bytes = near_sdk::borsh::to_vec(event).unwrap();
+            let decoded = near_sdk::borsh::from_slice::<HistoryEvent>(&bytes).unwrap();
+            assert_eq!(&decoded, event);
+            let json = near_sdk::serde_json::to_string(event).unwrap();
+            assert_eq!(
+                &near_sdk::serde_json::from_str::<HistoryEvent>(&json).unwrap(),
+                event
+            );
+        }
+
+        let dispute_bytes = near_sdk::borsh::to_vec(&resolved).unwrap();
+        assert_eq!(
+            near_sdk::borsh::from_slice::<DisputeRecord>(&dispute_bytes).unwrap(),
+            resolved
+        );
+        let response_bytes = near_sdk::borsh::to_vec(&response).unwrap();
+        assert_eq!(
+            near_sdk::borsh::from_slice::<DisputeResponse>(&response_bytes).unwrap(),
+            response
+        );
+        let resolution_bytes = near_sdk::borsh::to_vec(&resolution).unwrap();
+        assert_eq!(
+            near_sdk::borsh::from_slice::<DisputeResolutionRecord>(&resolution_bytes).unwrap(),
+            resolution
+        );
+        let raised = history_events
+            .iter()
+            .find(|event| {
+                matches!(
+                    &event.kind,
+                    HistoryEventKind::DisputeRaised { dispute_id: 1, .. }
+                )
+            })
+            .unwrap();
+        let event_bytes = near_sdk::borsh::to_vec(raised).unwrap();
+        assert_eq!(
+            near_sdk::borsh::from_slice::<HistoryEvent>(&event_bytes).unwrap(),
+            (*raised).clone()
+        );
+        let json = near_sdk::serde_json::to_string(&resolved).unwrap();
+        assert_eq!(
+            near_sdk::serde_json::from_str::<DisputeRecord>(&json).unwrap(),
+            resolved
+        );
+        let response_json = near_sdk::serde_json::to_string(&response).unwrap();
+        assert_eq!(
+            near_sdk::serde_json::from_str::<DisputeResponse>(&response_json).unwrap(),
+            response
+        );
+        let resolution_json = near_sdk::serde_json::to_string(&resolution).unwrap();
+        assert_eq!(
+            near_sdk::serde_json::from_str::<DisputeResolutionRecord>(&resolution_json).unwrap(),
+            resolution
+        );
+        let target_bytes = near_sdk::borsh::to_vec(&active_target).unwrap();
+        assert_eq!(
+            near_sdk::borsh::from_slice::<DisputeTarget>(&target_bytes).unwrap(),
+            active_target
+        );
     }
 
     fn valid_test_cid() -> String {
