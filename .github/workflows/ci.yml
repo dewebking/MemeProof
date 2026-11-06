@@ -1,28 +1,49 @@
-name: CI
+name: NEAR registry contract CI
 
 on:
   push:
+    paths:
+      - "contracts/memeproof-registry/**"
+      - ".github/workflows/ci.yml"
   pull_request:
+    paths:
+      - "contracts/memeproof-registry/**"
+      - ".github/workflows/ci.yml"
 
 jobs:
   contract:
-    name: Rust contract checks
+    name: Test and build registry contract
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Install stable Rust with WebAssembly target and rustfmt
-        uses: dtolnay/rust-toolchain@stable
+      - name: Install Rust 1.95.0 with WebAssembly target and rustfmt
+        uses: dtolnay/rust-toolchain@1.95.0
         with:
           targets: wasm32-unknown-unknown
           components: rustfmt
 
+      - name: Cache Cargo dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: contracts/memeproof-registry -> target
+          key: near-sdk-5.30.0
+
+      - name: Install cargo-near 0.22.0
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/near/cargo-near/releases/download/cargo-near-v0.22.0/cargo-near-installer.sh | sh
+
       - name: Validate Rust formatting
-        run: cargo fmt --manifest-path contracts/memeproof-registry/Cargo.toml -- --check
+        working-directory: contracts/memeproof-registry
+        run: cargo fmt -- --check
 
       - name: Run contract tests
-        run: cargo test --manifest-path contracts/memeproof-registry/Cargo.toml
+        working-directory: contracts/memeproof-registry
+        run: cargo test --locked
 
-      - name: Build contract for WebAssembly
-        run: cargo build --manifest-path contracts/memeproof-registry/Cargo.toml --target wasm32-unknown-unknown --release
+      - name: Build contract for WebAssembly with cargo-near
+        working-directory: contracts/memeproof-registry
+        run: cargo near build non-reproducible-wasm --locked
