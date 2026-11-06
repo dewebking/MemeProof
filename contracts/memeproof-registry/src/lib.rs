@@ -153,6 +153,15 @@ struct Nep297Event {
 }
 
 #[near(serializers = [json])]
+#[serde(rename_all = "snake_case")]
+struct CommitmentNep297Event {
+    standard: String,
+    version: String,
+    event: String,
+    data: Vec<CommitmentCreatedEventData>,
+}
+
+#[near(serializers = [json])]
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct TokenRegisteredEventData {
     event_id: u64,
@@ -340,7 +349,7 @@ impl MemeProofRegistry {
         if refund > 0 {
             Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
         }
-        let event = Nep297Event {
+        let event = CommitmentNep297Event {
             standard: "memeproof".to_owned(),
             version: "1.0.0".to_owned(),
             event: "commitment_created".to_owned(),
@@ -810,8 +819,8 @@ mod tests {
                 .insert(identity.clone(), record.id);
         }
 
-        let mut tokens: LookupMap<u64, TokenRecord> = LookupMap::new(StorageKey::TokensById);
-        let mut identities: LookupMap<TokenIdentity, u64> =
+        let tokens: LookupMap<u64, TokenRecord> = LookupMap::new(StorageKey::TokensById);
+        let identities: LookupMap<TokenIdentity, u64> =
             LookupMap::new(StorageKey::TokenIdsByIdentity);
         assert_eq!(tokens.get(&1), Some(&record));
         assert_eq!(identities.get(&identity), Some(&1));
