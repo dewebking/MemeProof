@@ -4216,7 +4216,12 @@ mod tests {
         assert!(registry.history_events.get(&(before_history + 1)).is_none());
         assert!(registry.history_events.get(&(before_history + 2)).is_none());
 
-        dispute_call("refund.testnet", 101, NearToken::from_near(10));
+        dispute_call_from(
+            "refund.testnet",
+            "caller.testnet",
+            101,
+            NearToken::from_near(10),
+        );
         let before = env::storage_usage();
         registry.open_dispute(
             DisputeTarget::Commitment {
@@ -4254,11 +4259,11 @@ mod tests {
 
     #[test]
     fn multi_event_history_id_exhaustion_restores_staged_counters_and_state() {
-        let mut empty = registry_with_commitment();
-        empty.last_history_event_id = u64::MAX - 1;
+        let mut registry = registry_with_commitment();
+        registry.last_history_event_id = u64::MAX - 1;
         let before_storage = env::storage_usage();
         dispute_call("challenger.testnet", 100, NearToken::from_near(10));
-        assert!(catch_unwind(AssertUnwindSafe(|| empty.open_dispute(
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.open_dispute(
             DisputeTarget::Commitment {
                 commitment_id: 1,
                 version: 1,
@@ -4267,13 +4272,20 @@ mod tests {
             "resolver.testnet".parse::<AccountId>().unwrap(),
         )))
         .is_err());
-        assert_eq!(empty.last_dispute_id, 0);
-        assert_eq!(empty.last_history_event_id, u64::MAX - 1);
+        assert_eq!(registry.last_dispute_id, 0);
+        assert_eq!(registry.last_history_event_id, u64::MAX - 1);
         assert_eq!(env::storage_usage(), before_storage);
-        assert!(empty.disputes_by_id.get(&1).is_none());
-        assert!(empty.history_events.get(&u64::MAX).is_none());
+        assert!(registry.disputes_by_id.get(&1).is_none());
+        assert!(registry.history_events.get(&u64::MAX).is_none());
+        let target = DisputeTarget::Commitment {
+            commitment_id: 1,
+            version: 1,
+        };
+        assert!(!registry.active_disputes_by_target.contains_key(&target));
 
-        let mut registry = registry_with_commitment();
+        // Reuse the same fixture so its persistent mock trie does not attempt to register the
+        // token a second time. The failed allocation staged no history writes.
+        registry.last_history_event_id = 0;
         open_commitment_dispute(&mut registry, 100);
         dispute_call("resolver.testnet", 101, NearToken::from_near(10));
         registry.accept_dispute_appointment(1);
