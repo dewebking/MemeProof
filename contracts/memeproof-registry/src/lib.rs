@@ -4389,19 +4389,41 @@ mod tests {
         );
         assert!(registry.active_disputes_by_target.get(&target).is_none());
 
-        let mut expiring = registry_with_commitment();
-        let opened = open_commitment_dispute(&mut expiring, 200);
+        // Resolution releases the exact target, so reuse the same registry for a second
+        // dispute. Creating another fixture here would try to register its token again in the
+        // persistent mock trie.
+        dispute_call("challenger2.testnet", 200, NearToken::from_near(10));
+        let opened = registry.open_dispute(
+            target.clone(),
+            "A later challenge for the same target".into(),
+            "resolver3.testnet".parse::<AccountId>().unwrap(),
+        );
+        assert_eq!(opened.id, 2);
         let expiry_target = opened.target.clone();
         let expiry_at = opened.resolver_deadline_ns + 1;
-        assert_dispute_write_rolls_back(
-            &mut expiring,
-            &expiry_target,
+        let before_dispute = registry.get_dispute(2).unwrap();
+        let before_history = registry.last_history_event_id;
+        let before_storage = env::storage_usage();
+        dispute_call_from(
+            "short-payer.testnet",
             "anyone.testnet",
             expiry_at,
-            |this| {
-                this.expire_dispute(1);
-            },
+            NearToken::from_yoctonear(1),
         );
+        assert!(catch_unwind(AssertUnwindSafe(|| registry.expire_dispute(2))).is_err());
+        assert_eq!(registry.get_dispute(2), Some(before_dispute));
+        assert_eq!(registry.last_history_event_id, before_history);
+        assert_eq!(registry.last_dispute_id, 2);
+        assert_eq!(env::storage_usage(), before_storage);
+        assert_eq!(
+            registry.active_disputes_by_target.get(&expiry_target),
+            Some(&2)
+        );
+        assert!(registry
+            .history_events
+            .get(&before_history.saturating_add(1))
+            .is_none());
+
         let deposit = NearToken::from_near(10);
         dispute_call_from(
             "expiry-payer.testnet",
@@ -4410,9 +4432,9 @@ mod tests {
             deposit,
         );
         let before = env::storage_usage();
-        assert_eq!(expiring.expire_dispute(1).status, DisputeStatus::Expired);
+        assert_eq!(registry.expire_dispute(2).status, DisputeStatus::Expired);
         assert_dispute_excess_refund("expiry-payer.testnet", deposit, before);
-        assert!(expiring
+        assert!(registry
             .active_disputes_by_target
             .get(&expiry_target)
             .is_none());
