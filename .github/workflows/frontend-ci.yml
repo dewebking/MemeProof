@@ -1,0 +1,52 @@
+name: Frontend CI
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - "apps/web/**"
+      - "packages/shared/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/frontend-ci.yml"
+  pull_request:
+    branches: [master]
+    paths:
+      - "apps/web/**"
+      - "packages/shared/**"
+      - "package.json"
+      - "package-lock.json"
+      - ".github/workflows/frontend-ci.yml"
+
+jobs:
+  frontend:
+    name: TypeScript, lint, tests, and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - name: Install dependencies from lockfile
+        run: npm ci
+
+      - name: Validate TypeScript
+        run: npx tsc --project apps/web/tsconfig.json --noEmit
+
+      - name: Run ESLint
+        run: npm run lint
+
+      - name: Run frontend tests
+        run: find apps/web/src packages/shared/src -type f -name '*.test.mjs' -print0 | xargs -0 node --test
+
+      - name: Build production frontend
+        run: npm run build
