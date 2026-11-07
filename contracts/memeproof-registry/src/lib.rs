@@ -2269,11 +2269,13 @@ mod tests {
 
     fn set_registration_context(predecessor: &str, signer: &str, deposit: NearToken, time: u64) {
         let mut context = VMContextBuilder::new();
+        let storage_usage = env::storage_usage();
         context
             .current_account_id("registry.testnet".parse::<AccountId>().unwrap())
             .predecessor_account_id(predecessor.parse::<AccountId>().unwrap())
             .signer_account_id(signer.parse::<AccountId>().unwrap())
             .attached_deposit(deposit)
+            .storage_usage(storage_usage)
             .block_timestamp(time);
         testing_env!(context.build());
     }
@@ -3819,6 +3821,10 @@ mod tests {
         assert_eq!(registry.last_dispute_id, 1);
         assert_eq!(env::storage_usage(), before_storage);
         assert_eq!(registry.active_disputes_by_target.get(target), Some(&1));
+        assert!(registry
+            .history_events
+            .get(&before_history.saturating_add(1))
+            .is_none());
     }
 
     fn open_commitment_dispute(registry: &mut MemeProofRegistry, at: u64) -> DisputeRecord {
@@ -4202,6 +4208,13 @@ mod tests {
         assert_eq!(registry.last_history_event_id, before_history);
         assert_eq!(env::storage_usage(), before_storage);
         assert!(registry.disputes_by_id.get(&1).is_none());
+        let target = DisputeTarget::Commitment {
+            commitment_id: 1,
+            version: 1,
+        };
+        assert!(!registry.active_disputes_by_target.contains_key(&target));
+        assert!(registry.history_events.get(&(before_history + 1)).is_none());
+        assert!(registry.history_events.get(&(before_history + 2)).is_none());
 
         dispute_call("refund.testnet", 101, NearToken::from_near(10));
         let before = env::storage_usage();
@@ -4233,6 +4246,10 @@ mod tests {
         assert!(registry.get_dispute_response(1).is_none());
         assert_eq!(registry.last_history_event_id, previous_history);
         assert_eq!(env::storage_usage(), before_storage);
+        assert!(registry
+            .history_events
+            .get(&(previous_history + 1))
+            .is_none());
     }
 
     #[test]
