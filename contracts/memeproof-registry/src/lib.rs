@@ -1853,6 +1853,24 @@ impl MemeProofRegistry {
         }
     }
 
+    /// JSON-safe entry point for browser wallets, whose JavaScript number
+    /// representation cannot preserve all u64 values (especially ns times).
+    #[payable]
+    pub fn create_commitment_decimal(
+        &mut self,
+        token_id: String,
+        title: String,
+        description: String,
+        criteria: String,
+        deadline_at_ns: String,
+    ) -> CommitmentWithCurrentVersion {
+        let token_id = parse_decimal_u64(&token_id)
+            .unwrap_or_else(|| env::panic_str("Token ID must be a decimal u64 string."));
+        let deadline_at_ns = parse_decimal_u64(&deadline_at_ns)
+            .unwrap_or_else(|| env::panic_str("Deadline must be a decimal u64 string."));
+        self.create_commitment(token_id, title, description, criteria, deadline_at_ns)
+    }
+
     #[payable]
     pub fn register_token(
         &mut self,
@@ -2087,6 +2105,13 @@ fn parse_near_account_id(value: &str) -> Result<AccountId, InputValidationError>
     AccountId::try_from(value.to_owned()).map_err(|_| InputValidationError::InvalidAccountId)
 }
 
+fn parse_decimal_u64(value: &str) -> Option<u64> {
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    value.parse().ok()
+}
+
 fn parse_network_id(value: &str) -> Result<NetworkId, InputValidationError> {
     match value {
         "testnet" => Ok(NetworkId::Testnet),
@@ -2239,6 +2264,19 @@ fn read_varint(bytes: &[u8], cursor: &mut usize) -> Option<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn decimal_u64_arguments_preserve_full_range_and_reject_invalid_text() {
+        assert_eq!(parse_decimal_u64("18446744073709551615"), Some(u64::MAX));
+        assert_eq!(
+            parse_decimal_u64("1735689600123456789"),
+            Some(1_735_689_600_123_456_789)
+        );
+        assert_eq!(parse_decimal_u64(""), None);
+        assert_eq!(parse_decimal_u64("-1"), None);
+        assert_eq!(parse_decimal_u64("1.0"), None);
+        assert_eq!(parse_decimal_u64("18446744073709551616"), None);
+    }
     use near_sdk::store::LookupMap;
     use near_sdk::test_utils::VMContextBuilder;
     use near_sdk::testing_env;

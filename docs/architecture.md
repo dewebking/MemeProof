@@ -250,6 +250,23 @@ Track API error rate/latency, upload failures, AI/verification job age and failu
 - SputnikDAO for selected governance processes, Trezu treasury references/integration, NEAR Intents cross-chain flows, and commitment bonds after product and contract policies are proven.
 - Each integration should be optional, independently deployable, and must not weaken the chain-backed history.
 
+## Frontend registry integration status
+
+The product workspace shares the existing HOT Connect NEAR testnet session
+through a wallet provider. The browser registry client reads canonical records
+from the configured NEAR RPC and submits user-signed `register_token` and
+`create_commitment` calls to the configured registry contract. The contract
+remains authoritative; a rejected wallet request or failed transaction does
+not create a local success record. Read methods are available for tokens,
+commitments and versions, evidence, reviews, disputes, and history. Supabase
+indexing and chain-backed record pages remain follow-up work. EVM wallets,
+mainnet, deployment, and other write methods are outside this integration.
+
+Configure `NEXT_PUBLIC_NEAR_NETWORK_ID=testnet`,
+`NEXT_PUBLIC_NEAR_RPC_URL`, and `NEXT_PUBLIC_REGISTRY_CONTRACT_ID` for the
+existing testnet registry before using contract actions. The app does not
+select or deploy a contract automatically.
+
 ## 12. Key decisions still required before implementation
 
 1. What exactly identifies a token (NEP-141 contract account only for MVP, or other forms), and who may register it?

@@ -6,10 +6,11 @@ import { useEffect, useState, type ReactNode } from "react";
 import WalletConnect from "./wallet-connect";
 import { Badge, Button, Card } from "./ui";
 import DiscoverTokens from "./discover-tokens";
+import { CreateCommitmentForm, RegisterTokenForm } from "./registry-actions";
 
 const nav = [
   ["/overview", "Overview", "O"], ["/discover", "Discover", "D"],
-  ["/my-commitments", "Commitments", "C"], ["/create-commitment", "New commitment", "+"],
+  ["/register-token", "Register token", "◉"], ["/my-commitments", "Commitments", "C"], ["/create-commitment", "New commitment", "+"],
   ["/activity", "Activity", "↗"], ["/profile", "Profile", "◉"], ["/settings", "Settings", "⚙"],
 ];
 
@@ -48,11 +49,11 @@ export function ProductShell({ children }: { children: ReactNode }) {
       <div className="workspace-label">WORKSPACE <span>TESTNET</span></div>
       <nav className="side-nav" aria-label="Workspace navigation">
         <div className="nav-group-label">Registry</div>
-        {nav.slice(0, 2).map(([href, label, icon]) => <Link key={href} href={href} onClick={() => setOpen(false)} className={`nav-link ${path === href ? "nav-active" : ""}`}><span className="nav-icon"><NavigationIcon name={icon}/></span>{label}</Link>)}
+        {nav.slice(0, 3).map(([href, label, icon]) => <Link key={href} href={href} onClick={() => setOpen(false)} className={`nav-link ${path === href ? "nav-active" : ""}`}><span className="nav-icon"><NavigationIcon name={icon}/></span>{label}</Link>)}
         <div className="nav-group-label nav-group-spaced">Your workspace</div>
-        {nav.slice(2, 5).map(([href, label, icon]) => <Link key={href} href={href} onClick={() => setOpen(false)} className={`nav-link ${path === href ? "nav-active" : ""}`}><span className="nav-icon"><NavigationIcon name={icon}/></span>{label}{href === "/create-commitment" && <span className="nav-plus"><NavigationIcon name="+"/></span>}</Link>)}
+        {nav.slice(3, 6).map(([href, label, icon]) => <Link key={href} href={href} onClick={() => setOpen(false)} className={`nav-link ${path === href ? "nav-active" : ""}`}><span className="nav-icon"><NavigationIcon name={icon}/></span>{label}{href === "/create-commitment" && <span className="nav-plus"><NavigationIcon name="+"/></span>}</Link>)}
         <div className="nav-group-label nav-group-spaced">Account</div>
-        {nav.slice(5).map(([href, label, icon]) => <Link key={href} href={href} onClick={() => setOpen(false)} className={`nav-link ${path === href ? "nav-active" : ""}`}><span className="nav-icon"><NavigationIcon name={icon}/></span>{label}</Link>)}
+        {nav.slice(6).map(([href, label, icon]) => <Link key={href} href={href} onClick={() => setOpen(false)} className={`nav-link ${path === href ? "nav-active" : ""}`}><span className="nav-icon"><NavigationIcon name={icon}/></span>{label}</Link>)}
       </nav>
       <div className="sidebar-bottom"><div className="network-card"><span className="live-dot" /><div><b>NEAR testnet</b><small>Development network</small></div></div><div className="sidebar-foot">MemeProof preview <span>v0.1</span></div></div>
     </aside>
@@ -72,7 +73,6 @@ function Metric({ label, value, note, mark }: { label: string; value: string; no
 
 export function ProductPage({ page }: { page: string }) {
   const [query, setQuery] = useState("");
-  const [step, setStep] = useState(1);
   const [message, setMessage] = useState("");
   const [fileName, setFileName] = useState("");
   const [saved, setSaved] = useState(false);
@@ -90,11 +90,9 @@ export function ProductPage({ page }: { page: string }) {
 
   if (page === "discover") return <><PageHeading eyebrow="PUBLIC REGISTRY" title="Discover token passports" description="Explore token data from Meme.Cooking. Passport commitments and verification are not available from this source." /><DiscoverTokens query={query} setQuery={setQuery} /></>;
 
-  if (page === "create-commitment") return <><PageHeading eyebrow="NEW COMMITMENT" title="Make a promise measurable" description="Create a clear commitment that can be understood, evidenced and reviewed." /><div className="form-layout"><div className="form-main panel"><div className="stepper">{[1,2,3].map(n => <div key={n} className={`stepper-item ${step >= n ? "stepper-current" : ""}`}><span>{step > n ? "✓" : `0${n}`}</span><b>{["Commitment", "Criteria & deadline", "Review"][n-1]}</b></div>)}</div><form onSubmit={e => { e.preventDefault(); if (step < 3) setStep(step+1); else setMessage("Draft saved in this session. Wallet-signed submission is not available yet."); }}>
-    {step === 1 && <><h2>What are you committing to?</h2><p className="form-hint">Write a specific promise that the community can understand.</p><label className="field-label">Token contract address<input required placeholder="e.g. token.example.testnet" /></label><small className="field-caption">Token identity uses the NEAR testnet and contract address.</small><label className="field-label">Commitment title<input required minLength={8} placeholder="e.g. Publish a monthly treasury report" /></label><label className="field-label">Commitment description<textarea required rows={4} placeholder="Describe what will be delivered and who it benefits." /></label></>}
-    {step === 2 && <><h2>Define success clearly</h2><p className="form-hint">Specific criteria help reviewers assess the outcome fairly.</p><label className="field-label">Success criteria<textarea required rows={4} placeholder="What observable conditions must be met?" /></label><label className="field-label">Deadline<input required type="date" min={new Date().toISOString().slice(0,10)} /></label><label className="field-label">How can this be verified?<textarea required rows={3} placeholder="Describe the evidence or on-chain activity that can demonstrate completion." /></label></>}
-    {step === 3 && <><h2>Review your commitment</h2><p className="form-hint">Review the information before creating a local draft.</p><div className="review-placeholder">Your commitment details are held in the form. Submission will require a NEAR testnet wallet signature when the registry is available.</div><DemoBanner /></>}
-    <div className="form-actions">{step > 1 && <Button variant="quiet" onClick={() => setStep(step-1)}>← Back</Button>}<Button type="submit">{step < 3 ? "Continue →" : "Save draft"}</Button></div>{message && <p role="status" className="form-success">{message}</p>}</form></div><aside className="side-note panel"><div className="note-icon">✳</div><h3>Good commitments are clear</h3><p>Use a single outcome, a date, and proof that someone else can check.</p><div className="note-rule"/><p className="muted">Commitments are intended to be immutable once published.</p></aside></div></>;
+  if (page === "create-commitment") return <><PageHeading eyebrow="NEW COMMITMENT" title="Make a promise measurable" description="Create a clear commitment that can be understood, evidenced and reviewed." /><CreateCommitmentForm /></>;
+
+  if (page === "register-token") return <><PageHeading eyebrow="TOKEN REGISTRATION / NEAR TESTNET" title="Register a token" description="Add a token contract identity to the on-chain MemeProof registry." /><RegisterTokenForm /></>;
 
   if (page === "evidence") return <><PageHeading eyebrow="EVIDENCE SUBMISSION" title="Add evidence to a commitment" description="Evidence is submitted by the creator and remains distinct from a verification result." /><DemoBanner /><div className="form-layout"><section className="panel form-main"><form onSubmit={e => { e.preventDefault(); setMessage("Evidence draft saved locally. File storage and wallet submission are not connected."); }}><label className="field-label">Commitment reference<input required placeholder="Enter commitment ID" /></label><label className="field-label">Evidence files<span className="upload-zone"><input type="file" multiple onChange={e => setFileName(Array.from(e.target.files ?? []).map(f => f.name).join(", "))} /><span className="upload-icon">↑</span><b>{fileName || "Choose files or drag them here"}</b><small>File upload will be enabled with secure evidence storage.</small></span></label><label className="field-label">Transaction reference <span className="optional">Optional</span><input placeholder="NEAR transaction hash" /></label><label className="field-label">Evidence description<textarea required rows={4} placeholder="Explain what this evidence shows and how it supports the commitment." /></label><button className="button button-primary" type="submit">Save evidence draft</button>{message && <p role="status" className="form-success">{message}</p>}</form></section><aside className="side-note panel"><h3>Submission history</h3><EmptyState title="No evidence submitted" text="Creator-submitted evidence will be listed with its date and transaction reference." /></aside></div></>;
 
