@@ -672,7 +672,7 @@ impl MemeProofRegistry {
     pub fn respond_to_dispute(&mut self, dispute_id: u64, response: String) -> DisputeResponse {
         validate_bounded_text(&response, MAX_DISPUTE_RESPONSE_BYTES)
             .unwrap_or_else(|_| env::panic_str("Dispute response is invalid."));
-        let mut dispute = self
+        let dispute = self
             .disputes_by_id
             .get(&dispute_id)
             .cloned()
@@ -1350,9 +1350,7 @@ impl MemeProofRegistry {
             env::panic_str("Attached deposit does not cover review storage.");
         }
         let refund = attached - required;
-        if refund > 0 {
-            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
-        }
+        refund_excess(refund);
         let event = ReviewNep297Event {
             standard: "memeproof".into(),
             version: "1.0.0".into(),
@@ -1562,9 +1560,7 @@ impl MemeProofRegistry {
             env::panic_str("Attached deposit does not cover evidence storage.");
         }
         let refund = attached - required;
-        if refund > 0 {
-            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
-        }
+        refund_excess(refund);
         let event = EvidenceSubmittedNep297Event {
             standard: "memeproof".into(),
             version: "1.0.0".into(),
@@ -1718,9 +1714,7 @@ impl MemeProofRegistry {
             env::panic_str("Attached deposit does not cover commitment amendment storage.");
         }
         let refund = attached - required;
-        if refund > 0 {
-            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
-        }
+        refund_excess(refund);
         let event = CommitmentAmendedNep297Event {
             standard: "memeproof".to_owned(),
             version: "1.0.0".to_owned(),
@@ -1835,9 +1829,7 @@ impl MemeProofRegistry {
             env::panic_str("Attached deposit does not cover commitment storage.");
         }
         let refund = attached_deposit - required_deposit;
-        if refund > 0 {
-            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
-        }
+        refund_excess(refund);
         let event = CommitmentNep297Event {
             standard: "memeproof".to_owned(),
             version: "1.0.0".to_owned(),
@@ -1935,9 +1927,7 @@ impl MemeProofRegistry {
         }
 
         let refund = attached_deposit - required_deposit;
-        if refund > 0 {
-            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(refund));
-        }
+        refund_excess(refund);
 
         let event = Nep297Event {
             standard: "memeproof".to_owned(),
@@ -2056,7 +2046,8 @@ fn storage_cost_for_growth(before: u64, after: u64) -> Option<u128> {
 
 fn refund_excess(amount: u128) {
     if amount > 0 {
-        Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(amount));
+        let _refund_promise =
+            Promise::new(env::predecessor_account_id()).transfer(NearToken::from_yoctonear(amount));
     }
 }
 
@@ -3838,7 +3829,7 @@ mod tests {
                 version: 1,
             },
             "The criteria were not met".into(),
-            "resolver.testnet".parse().unwrap(),
+            "resolver.testnet".parse::<AccountId>().unwrap(),
         )
     }
 
@@ -3847,11 +3838,17 @@ mod tests {
         let mut registry = registry_with_commitment();
         let dispute = open_commitment_dispute(&mut registry, 100);
         assert_eq!(dispute.status, DisputeStatus::Open);
-        assert_eq!(dispute.affected_party, "wallet.testnet".parse().unwrap());
+        assert_eq!(
+            dispute.affected_party,
+            "wallet.testnet".parse::<AccountId>().unwrap()
+        );
 
         dispute_call("wallet.testnet", 200, NearToken::from_near(10));
         let response = registry.respond_to_dispute(1, "I disagree with the challenge".into());
-        assert_eq!(response.responder, "wallet.testnet".parse().unwrap());
+        assert_eq!(
+            response.responder,
+            "wallet.testnet".parse::<AccountId>().unwrap()
+        );
         dispute_call("wallet.testnet", 201, NearToken::from_near(10));
         assert!(catch_unwind(AssertUnwindSafe(
             || registry.respond_to_dispute(1, "Duplicate".into())
@@ -3889,7 +3886,10 @@ mod tests {
             DisputeDisposition::Inconclusive,
             "Evidence is insufficient".into(),
         );
-        assert_eq!(result.resolver, "resolver.testnet".parse().unwrap());
+        assert_eq!(
+            result.resolver,
+            "resolver.testnet".parse::<AccountId>().unwrap()
+        );
         assert_eq!(
             registry.get_dispute(1).unwrap().status,
             DisputeStatus::Resolved
@@ -3935,15 +3935,17 @@ mod tests {
         dispute_call("resolver.testnet", 101, NearToken::from_near(10));
         registry.accept_dispute_appointment(1);
         dispute_call("wallet.testnet", 102, NearToken::from_near(10));
-        let countered =
-            registry.counterpropose_dispute_resolver(1, "resolver2.testnet".parse().unwrap());
+        let countered = registry
+            .counterpropose_dispute_resolver(1, "resolver2.testnet".parse::<AccountId>().unwrap());
         assert!(!countered.other_party_accepted);
         assert!(!countered.resolver_accepted);
         assert!(countered.counterproposal_used);
         dispute_call("wallet.testnet", 103, NearToken::from_near(10));
-        assert!(catch_unwind(AssertUnwindSafe(
-            || registry.counterpropose_dispute_resolver(1, "resolver3.testnet".parse().unwrap())
-        ))
+        assert!(catch_unwind(AssertUnwindSafe(|| registry
+            .counterpropose_dispute_resolver(
+                1,
+                "resolver3.testnet".parse::<AccountId>().unwrap()
+            )))
         .is_err());
         dispute_call("resolver2.testnet", 104, NearToken::from_near(10));
         registry.accept_dispute_appointment(1);
@@ -4002,7 +4004,7 @@ mod tests {
                 evidence_id: evidence.id,
             },
             "Evidence is inaccurate".into(),
-            "resolver.testnet".parse().unwrap(),
+            "resolver.testnet".parse::<AccountId>().unwrap(),
         );
         assert_eq!(record.commitment_id, evidence.commitment_id);
         assert_eq!(record.version, evidence.version);
@@ -4013,7 +4015,7 @@ mod tests {
                 evidence_id: evidence.id
             },
             "Duplicate challenge".into(),
-            "resolver2.testnet".parse().unwrap()
+            "resolver2.testnet".parse::<AccountId>().unwrap()
         )))
         .is_err());
         assert_eq!(
@@ -4035,7 +4037,7 @@ mod tests {
                 version: 1,
             },
             "Missing commitment".into(),
-            "resolver.testnet".parse().unwrap(),
+            "resolver.testnet".parse::<AccountId>().unwrap(),
         )))
         .is_err());
         assert!(catch_unwind(AssertUnwindSafe(|| registry.open_dispute(
@@ -4044,7 +4046,7 @@ mod tests {
                 version: 99,
             },
             "Missing version".into(),
-            "resolver.testnet".parse().unwrap(),
+            "resolver.testnet".parse::<AccountId>().unwrap(),
         )))
         .is_err());
         dispute_call("wallet.testnet", 101, NearToken::from_near(10));
@@ -4054,7 +4056,7 @@ mod tests {
                 version: 1,
             },
             "Self challenge".into(),
-            "resolver.testnet".parse().unwrap(),
+            "resolver.testnet".parse::<AccountId>().unwrap(),
         )))
         .is_err());
         dispute_call("challenger.testnet", 102, NearToken::from_near(10));
@@ -4064,7 +4066,7 @@ mod tests {
                 version: 1,
             },
             "Resolver is the affected party".into(),
-            "wallet.testnet".parse().unwrap(),
+            "wallet.testnet".parse::<AccountId>().unwrap(),
         )))
         .is_err());
         assert_eq!(registry.last_dispute_id, 0);
@@ -4117,7 +4119,7 @@ mod tests {
                         version: 1,
                     },
                     "A later challenge".into(),
-                    "resolver2.testnet".parse().unwrap(),
+                    "resolver2.testnet".parse::<AccountId>().unwrap(),
                 )
                 .id,
             2
@@ -4177,7 +4179,7 @@ mod tests {
             registry
                 .respond_to_dispute(1, "Response after appointment".into())
                 .responder,
-            "wallet.testnet".parse().unwrap()
+            "wallet.testnet".parse::<AccountId>().unwrap()
         );
     }
 
@@ -4193,7 +4195,7 @@ mod tests {
                 version: 1
             },
             "Reason".into(),
-            "resolver.testnet".parse().unwrap()
+            "resolver.testnet".parse::<AccountId>().unwrap()
         )))
         .is_err());
         assert_eq!(registry.last_dispute_id, 0);
@@ -4209,7 +4211,7 @@ mod tests {
                 version: 1,
             },
             "Reason".into(),
-            "resolver.testnet".parse().unwrap(),
+            "resolver.testnet".parse::<AccountId>().unwrap(),
         );
         let required =
             env::storage_byte_cost().as_yoctonear() * u128::from(env::storage_usage() - before);
@@ -4245,7 +4247,7 @@ mod tests {
                 version: 1,
             },
             "Reason".into(),
-            "resolver.testnet".parse().unwrap(),
+            "resolver.testnet".parse::<AccountId>().unwrap(),
         )))
         .is_err());
         assert_eq!(empty.last_dispute_id, 0);
@@ -4289,13 +4291,16 @@ mod tests {
         assert!(registry.get_dispute(1).unwrap().resolver_accepted);
 
         assert_dispute_write_rolls_back(&mut registry, &target, "wallet.testnet", 103, |this| {
-            this.counterpropose_dispute_resolver(1, "resolver2.testnet".parse().unwrap());
+            this.counterpropose_dispute_resolver(
+                1,
+                "resolver2.testnet".parse::<AccountId>().unwrap(),
+            );
         });
         let deposit = NearToken::from_near(10);
         dispute_call_from("counter-payer.testnet", "wallet.testnet", 104, deposit);
         let before = env::storage_usage();
-        let countered =
-            registry.counterpropose_dispute_resolver(1, "resolver2.testnet".parse().unwrap());
+        let countered = registry
+            .counterpropose_dispute_resolver(1, "resolver2.testnet".parse::<AccountId>().unwrap());
         assert_dispute_excess_refund("counter-payer.testnet", deposit, before);
         assert!(!countered.resolver_accepted);
         assert!(!countered.other_party_accepted);
@@ -4399,7 +4404,7 @@ mod tests {
                 version: 2,
             },
             "Second target".into(),
-            "resolver2.testnet".parse().unwrap(),
+            "resolver2.testnet".parse::<AccountId>().unwrap(),
         );
         let first = registry.get_disputes(None, Some(1));
         assert_eq!(first.records[0].id, 1);
@@ -4465,7 +4470,10 @@ mod tests {
             dispute_call("resolver.testnet", 102, NearToken::from_near(10));
             registry.accept_dispute_appointment(1);
             dispute_call("wallet.testnet", 103, NearToken::from_near(10));
-            registry.counterpropose_dispute_resolver(1, "resolver2.testnet".parse().unwrap());
+            registry.counterpropose_dispute_resolver(
+                1,
+                "resolver2.testnet".parse::<AccountId>().unwrap(),
+            );
             dispute_call("resolver2.testnet", 104, NearToken::from_near(10));
             registry.accept_dispute_appointment(1);
             dispute_call("challenger.testnet", 105, NearToken::from_near(10));
@@ -4489,7 +4497,7 @@ mod tests {
             registry.open_dispute(
                 active_target.clone(),
                 "Active index survives".into(),
-                "resolver3.testnet".parse().unwrap(),
+                "resolver3.testnet".parse::<AccountId>().unwrap(),
             );
             last_history_event_id = registry.last_history_event_id;
         }
