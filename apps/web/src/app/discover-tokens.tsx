@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import TokenImage from "./token-image";
 import { filterDiscoverTokens, type LaunchStatusFilter } from "@/lib/discover-filter";
+import { fetchDiscoverListing, type DiscoverTokenRecord } from "@/lib/discover-client";
 
-type Token = Record<string, unknown> & { meme_id: string | number };
+type Token = DiscoverTokenRecord;
 
 function text(record: Token, ...keys: string[]): string | undefined {
   for (const key of keys) {
@@ -21,36 +22,67 @@ export default function DiscoverTokens({ query, setQuery }: { query: string; set
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState<LaunchStatusFilter>("all");
-  const [retry, setRetry] = useState(0);
   const [source, setSource] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
+  const [lastSuccessfulRefresh, setLastSuccessfulRefresh] = useState<string | null>(null);
+  const activeRequest = useRef<AbortController | null>(null);
+
+  const loadTokens = useCallback(async (controller: AbortController) => {
+    try {
+      const listing = await fetchDiscoverListing(fetch, controller.signal);
+      if (controller.signal.aborted) return;
+      setTokens(listing.data);
+      setSource(listing.source);
+      setStale(listing.stale);
+      setLastSuccessfulRefresh(new Date().toISOString());
+      setError(null);
+    } catch (reason) {
+      if (controller.signal.aborted || (reason instanceof Error && reason.name === "AbortError")) return;
+      setError(reason instanceof Error ? reason.message : "Unable to load token data.");
+    } finally {
+      if (activeRequest.current === controller) {
+        activeRequest.current = null;
+        setLoading(false);
+      }
+    }
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
-    fetch("/api/meme-cooking/meme", { signal: controller.signal })
-      .then(async response => {
-        const body: unknown = await response.json();
-        if (!response.ok) {
-          const message = typeof body === "object" && body !== null && "error" in body && typeof body.error === "string"
-            ? body.error
-            : `Token service returned HTTP ${response.status}.`;
-          throw new Error(message);
-        }
-        if (typeof body !== "object" || body === null || !("data" in body) || !Array.isArray(body.data)) {
-          throw new Error("Token service returned an unexpected response.");
-        }
-        setTokens(body.data.filter((value): value is Token => typeof value === "object" && value !== null && (typeof value.meme_id === "string" || typeof value.meme_id === "number")));
-        setSource("source" in body && typeof body.source === "string" ? body.source : "meme.cooking");
-        setStale("stale" in body && body.stale === true);
+    activeRequest.current = controller;
+    fetchDiscoverListing(fetch, controller.signal)
+      .then((listing) => {
+        if (controller.signal.aborted) return;
+        setTokens(listing.data);
+        setSource(listing.source);
+        setStale(listing.stale);
+        setLastSuccessfulRefresh(new Date().toISOString());
         setError(null);
       })
-      .catch(reason => {
-        if (reason instanceof Error && reason.name === "AbortError") return;
+      .catch((reason: unknown) => {
+        if (controller.signal.aborted || (reason instanceof Error && reason.name === "AbortError")) return;
         setError(reason instanceof Error ? reason.message : "Unable to load token data.");
       })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
-    return () => controller.abort();
-  }, [retry]);
+      .finally(() => {
+        if (activeRequest.current === controller) {
+          activeRequest.current = null;
+          setLoading(false);
+        }
+      });
+    return () => {
+      controller.abort();
+      if (activeRequest.current === controller) activeRequest.current = null;
+    };
+  }, []);
+
+  const refresh = () => {
+    if (activeRequest.current) return;
+    const controller = new AbortController();
+    activeRequest.current = controller;
+    setError(null);
+    setLoading(true);
+    void loadTokens(controller);
+  };
 
   const filtered = useMemo(() => filterDiscoverTokens(tokens, query, status), [query, status, tokens]);
 
@@ -64,9 +96,10 @@ export default function DiscoverTokens({ query, setQuery }: { query: string; set
         <option value="not_finalized">Not Finalized</option>
         <option value="unknown">Status unavailable</option>
       </select>
+      <button type="button" className="button button-primary button-small" onClick={refresh} disabled={loading} aria-label={loading ? "Refreshing token list" : "Refresh token list"}>{loading ? "Refreshing..." : "Refresh"}</button>
     </div>
-    {!loading && !error && source && <p className="discover-data-source" role="status">Source: {source === "sync_snapshot" ? "MemeProof cached Meme.Cooking snapshot" : source === "stale_cache" ? "Previously fetched Meme.Cooking data - temporarily stale" : "Meme.Cooking"}{stale ? " - showing last available data" : ""}</p>}
-    {loading ? <div className="empty-state" role="status"><h3>Loading tokens</h3><p>Fetching current token records.</p></div> : error ? <div className="empty-state" role="alert"><h3>Couldn’t load tokens</h3><p>{error}</p><button className="button button-primary button-small" onClick={() => { setError(null); setLoading(true); setRetry(value => value + 1); }}>Try again</button></div> : filtered.length === 0 ? <div className="empty-state"><h3>{query ? `No results for “${query}”` : "No tokens available"}</h3><p>{query ? "Try a different name, symbol, owner or contract." : "The live token service returned no records."}</p></div> : <div className="discover-token-list">
+    {source && <p className="discover-data-source" role="status">{stale ? "Showing stale cached data" : source === "meme.cooking" ? "Live data from Meme.Cooking" : "MemeProof cached Meme.Cooking snapshot"}{lastSuccessfulRefresh && <> · Last successful refresh: {new Date(lastSuccessfulRefresh).toLocaleString()}</>}</p>}
+    {loading ? <div className="empty-state" role="status"><h3>Loading tokens</h3><p>Fetching current token records.</p></div> : error ? <div className="empty-state" role="alert"><h3>Could not load tokens</h3><p>{error}</p><button className="button button-primary button-small" onClick={refresh}>Try again</button></div> : filtered.length === 0 ? <div className="empty-state"><h3>{query ? `No results for “${query}”` : "No tokens available"}</h3><p>{query ? "Try a different name, symbol, owner or contract." : "The live token service returned no records."}</p></div> : <div className="discover-token-list">
       {filtered.map((token, index) => {
         const name = text(token, "name") ?? "Unnamed token";
         const symbol = text(token, "symbol");
