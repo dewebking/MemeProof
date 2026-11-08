@@ -5,6 +5,7 @@ import Link from "next/link";
 import { Badge, Button, Card } from "./ui";
 import TokenImage from "./token-image";
 import PassportMarketOverview from "./passport-market-overview";
+import { RegistryIdentityStatus } from "./registry-passports";
 
 type Token = Record<string, unknown>;
 const first = (token: Token, ...keys: string[]): unknown => keys.map(key => token[key]).find(value => value !== undefined && value !== null && value !== "");
@@ -53,7 +54,7 @@ function Metric({ label, value, exact, denomination }: { label: string; value?: 
 export default function TokenPassport({ id }: { id: string }) {
   const [token, setToken] = useState<Token | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
   const [retry, setRetry] = useState(0);
   useEffect(() => {
     const controller = new AbortController();
@@ -105,6 +106,8 @@ export default function TokenPassport({ id }: { id: string }) {
       <div className="passport-overview-content"><p>{display(first(token, "description")) ?? "No project description is available."}</p><div className="passport-links">{links.filter(([, raw]) => Boolean(raw)).map(([label, raw]) => <SafeLink key={label} label={label} raw={raw} />)}</div></div>
     </Card></section>
 
+    <section className="passport-section"><div className="passport-section-heading"><div><span className="eyebrow">MEMEPROOF TESTNET REGISTRY</span><h2>Registration status</h2></div></div><RegistryIdentityStatus tokenContractAddress={contract} /></section>
+
     <PassportMarketOverview memeId={id} />
 
     <section className="passport-section"><div className="passport-section-heading"><div><span className="eyebrow">MEME.COOKING LAUNCH DATA</span><h2>Token economics</h2></div></div><div className="passport-metrics">
@@ -119,6 +122,5 @@ export default function TokenPassport({ id }: { id: string }) {
 
     <section className="passport-section"><div className="passport-section-heading"><div><span className="eyebrow">MEME.COOKING LAUNCH DATA</span><h2>Launch details</h2></div></div><Card className="passport-launch"><div className="passport-launch-status"><span>Launch finalization</span><Badge variant={launchState === "Finalized" ? "success" : "neutral"}>{launchState}</Badge></div><dl>{dates.filter(([, value]) => value !== undefined && value !== null && value !== "").map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{display(value)}</dd></div>)}{[["Token contract ID", contract], ["Pool ID", display(first(token, "pool_id"))]].filter(([, value]) => value).map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl><details className="passport-technical"><summary>Technical details</summary><pre>{JSON.stringify(token, null, 2)}</pre></details></Card></section>
 
-    <section className="passport-section"><div className="passport-section-heading"><div><span className="eyebrow">MEMEPROOF REGISTRY</span><h2>Accountability record</h2></div></div><Card className="passport-accountability"><Badge variant="warning">Not registered</Badge><p>This token has not yet been registered in the MemeProof registry. Commitments, evidence submissions, disputes, and verification history become available after registration.</p><small>Meme.Cooking launch finalization is separate from MemeProof verification.</small></Card></section>
   </div>;
 }
