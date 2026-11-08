@@ -1,8 +1,9 @@
 import "server-only";
+import { withRetry } from "./retry";
 
 const API_BASE_URL = "https://api.meme.cooking";
 const CACHE_SECONDS = 60;
-const REQUEST_TIMEOUT_MS = 10_000;
+const REQUEST_TIMEOUT_MS = 8_000;
 
 export type MemeCookingToken = {
   [field: string]: unknown;
@@ -12,9 +13,48 @@ export class MemeCookingApiError extends Error {
   constructor(
     message: string,
     public readonly status: number,
+    public readonly upstreamStatus?: number,
   ) {
     super(message);
     this.name = "MemeCookingApiError";
+  }
+}
+
+class UpstreamHttpError extends Error {
+  constructor(public readonly status: number) {
+    super(`http_${status}`);
+  }
+}
+
+function retryable(error: unknown): boolean {
+  if (error instanceof UpstreamHttpError)
+    return error.status === 408 || error.status === 429 || error.status >= 500;
+  return true;
+}
+
+async function requestMemeCooking(url: string): Promise<Response> {
+  try {
+    return await withRetry(async (attempt) => {
+      const response = await fetch(url, {
+        headers: { accept: "application/json" },
+        ...(attempt === 0 ? { next: { revalidate: CACHE_SECONDS } } : { cache: "no-store" as const }),
+        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+      });
+      if (!response.ok) throw new UpstreamHttpError(response.status);
+      return response;
+    }, retryable);
+  } catch (error) {
+    if (error instanceof UpstreamHttpError) {
+      const status = error.status === 404 ? 404 : error.status === 429 ? 503 : error.status >= 500 ? error.status : 502;
+      throw new MemeCookingApiError(
+        `Meme.Cooking returned HTTP ${error.status}.`,
+        status,
+        error.status,
+      );
+    }
+    if (error instanceof Error && error.name === "TimeoutError")
+      throw new MemeCookingApiError("Meme.Cooking request timed out.", 504);
+    throw new MemeCookingApiError("Meme.Cooking could not be reached.", 502);
   }
 }
 
@@ -60,22 +100,7 @@ function safeMemePageUrl(value: string): string {
 }
 
 async function fetchMemePage(url: string): Promise<unknown> {
-  let response: Response;
-  try {
-    response = await fetch(url, {
-      headers: { accept: "application/json" },
-      next: { revalidate: CACHE_SECONDS },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") {
-      throw new MemeCookingApiError("Meme.Cooking request timed out.", 504);
-    }
-    throw new MemeCookingApiError("Meme.Cooking could not be reached.", 502);
-  }
-  if (!response.ok) {
-    throw new MemeCookingApiError(`Meme.Cooking returned HTTP ${response.status}.`, response.status === 429 ? 503 : 502);
-  }
+  const response = await requestMemeCooking(url);
   try {
     return await response.json();
   } catch {
@@ -107,20 +132,7 @@ export async function getMemes(): Promise<MemeCookingToken[]> {
 }
 
 export async function getMeme(id: string): Promise<MemeCookingToken> {
-  let response: Response;
-  try {
-    response = await fetch(`${API_BASE_URL}/meme/${encodeURIComponent(id)}`, {
-      headers: { accept: "application/json" },
-      next: { revalidate: CACHE_SECONDS },
-      signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
-    });
-  } catch (error) {
-    if (error instanceof Error && error.name === "TimeoutError") {
-      throw new MemeCookingApiError("Meme.Cooking request timed out.", 504);
-    }
-    throw new MemeCookingApiError("Meme.Cooking could not be reached.", 502);
-  }
-  if (!response.ok) throw new MemeCookingApiError(`Meme.Cooking returned HTTP ${response.status}.`, response.status === 429 ? 503 : response.status === 404 ? 404 : 502);
+  const response = await requestMemeCooking(`${API_BASE_URL}/meme/${encodeURIComponent(id)}`);
   let payload: unknown;
   try { payload = await response.json(); } catch { throw new MemeCookingApiError("Meme.Cooking returned invalid JSON.", 502); }
   if (isToken(payload)) return payload;
