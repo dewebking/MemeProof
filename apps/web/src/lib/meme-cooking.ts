@@ -32,12 +32,12 @@ function retryable(error: unknown): boolean {
   return true;
 }
 
-async function requestMemeCooking(url: string): Promise<Response> {
+async function requestMemeCooking(url: string, cacheFirstAttempt = true): Promise<Response> {
   try {
     return await withRetry(async (attempt) => {
       const response = await fetch(url, {
         headers: { accept: "application/json" },
-        ...(attempt === 0 ? { next: { revalidate: CACHE_SECONDS } } : { cache: "no-store" as const }),
+        ...(attempt === 0 && cacheFirstAttempt ? { next: { revalidate: CACHE_SECONDS } } : { cache: "no-store" as const }),
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
       if (!response.ok) throw new UpstreamHttpError(response.status);
@@ -100,7 +100,7 @@ function safeMemePageUrl(value: string): string {
 }
 
 async function fetchMemePage(url: string): Promise<unknown> {
-  const response = await requestMemeCooking(url);
+  const response = await requestMemeCooking(url, false);
   try {
     return await response.json();
   } catch {
