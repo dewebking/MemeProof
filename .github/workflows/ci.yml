@@ -47,3 +47,11 @@ jobs:
       - name: Build contract for WebAssembly with cargo-near
         working-directory: contracts/memeproof-registry
         run: cargo near build non-reproducible-wasm --locked
+
+      - name: Upload contract WASM
+        uses: actions/upload-artifact@v4
+        with:
+          name: memeproof-registry-wasm-${{ github.sha }}
+          path: contracts/memeproof-registry/target/near/memeproof_registry.wasm
+          if-no-files-found: error
+          retention-days: 14
