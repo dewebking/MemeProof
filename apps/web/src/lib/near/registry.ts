@@ -482,7 +482,7 @@ export class NearRegistryClient {
             type: "FunctionCall",
             params: {
               methodName,
-              args: serializeTransactionArgs(args),
+              args: serializeTransactionArgs(args, methodName),
               gas: FUNCTION_CALL_GAS,
               deposit: attachedDepositYocto.toString(),
             },
@@ -690,19 +690,85 @@ export class NearRegistryClient {
   }
 }
 
+const U64_TRANSACTION_ARGUMENTS: Record<string, ReadonlySet<string>> = {
+  submit_evidence: new Set(["commitment_id"]),
+  submit_review: new Set(["evidence_id"]),
+  open_dispute: new Set(["commitment_id", "evidence_id"]),
+  respond_to_dispute: new Set(["dispute_id"]),
+  counterpropose_dispute_resolver: new Set(["dispute_id"]),
+  accept_dispute_resolver: new Set(["dispute_id"]),
+  accept_dispute_appointment: new Set(["dispute_id"]),
+  resolve_dispute: new Set(["dispute_id"]),
+  expire_dispute: new Set(["dispute_id"]),
+  amend_commitment: new Set(["commitment_id", "deadline_at_ns"]),
+  create_commitment: new Set(["token_id", "deadline_at_ns"]),
+};
+
+function encodeJsonU64(value: unknown, field: string): number {
+  if (typeof value !== "string" && typeof value !== "number") {
+    throw new RegistryTransactionError(
+      `Transaction argument ${field} must be an unsigned integer.`,
+      "configuration",
+    );
+  }
+  const decimal = String(value);
+  if (!/^\d+$/.test(decimal)) {
+    throw new RegistryTransactionError(
+      `Transaction argument ${field} must be an unsigned integer.`,
+      "configuration",
+    );
+  }
+  const parsed = BigInt(decimal);
+  if (parsed > BigInt("18446744073709551615")) {
+    throw new RegistryTransactionError(
+      `Transaction argument ${field} exceeds the contract's u64 range.`,
+      "configuration",
+    );
+  }
+  if (parsed > BigInt(Number.MAX_SAFE_INTEGER)) {
+    throw new RegistryTransactionError(
+      `Transaction argument ${field} exceeds the safe integer range supported by this wallet serializer.`,
+      "configuration",
+    );
+  }
+  return Number(parsed);
+}
+
+function encodeTransactionU64Fields(
+  value: unknown,
+  fields: ReadonlySet<string>,
+): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => encodeTransactionU64Fields(item, fields));
+  }
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value).map(([key, child]) => [
+      key,
+      fields.has(key)
+        ? encodeJsonU64(child, key)
+        : encodeTransactionU64Fields(child, fields),
+    ]),
+  );
+}
+
 /**
- * HOT Connect accepts JSON-compatible argument objects. Keep exact u64 values
- * as decimal strings and reject BigInt objects, which JSON wallet bridges
- * cannot serialize without losing precision.
+ * HOT Connect accepts JSON-compatible argument objects. Rust `u64` parameters
+ * must be JSON numbers, while create_commitment_decimal deliberately accepts
+ * token IDs and nanosecond deadlines as decimal strings to preserve precision.
  */
 export function serializeTransactionArgs(
   args: Record<string, unknown>,
+  methodName?: string,
 ): Record<string, unknown> {
   try {
-    return JSON.parse(JSON.stringify(args)) as Record<string, unknown>;
+    const fields = methodName ? U64_TRANSACTION_ARGUMENTS[methodName] : undefined;
+    const encoded = fields ? encodeTransactionU64Fields(args, fields) : args;
+    return JSON.parse(JSON.stringify(encoded)) as Record<string, unknown>;
   } catch (cause) {
+    if (cause instanceof RegistryTransactionError) throw cause;
     throw new RegistryTransactionError(
-      "Transaction arguments must be JSON-compatible. Encode u64 values as decimal strings.",
+      "Transaction arguments must match the contract JSON types and be JSON-compatible.",
       "configuration",
       { cause },
     );

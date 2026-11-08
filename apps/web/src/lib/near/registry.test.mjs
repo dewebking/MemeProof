@@ -121,6 +121,79 @@ test("transaction arguments preserve decimal u64 strings through HOT signing", a
   });
 });
 
+test("submit_evidence sends the contract's exact JSON argument types", async () => {
+  const wallet = {
+    signAndSendTransaction: async (request) => {
+      const action = request.actions[0];
+      assert.equal(action.params.methodName, "submit_evidence");
+      assert.deepEqual(action.params.args, {
+        commitment_id: 1,
+        version: 1,
+        reference: "https://example.com/evidence.json",
+        content_hash: "a".repeat(64),
+      });
+      assert.equal(typeof action.params.args.commitment_id, "number");
+      assert.equal(typeof action.params.args.version, "number");
+      return {
+        transaction: { hash: "evidence-tx" },
+        status: { SuccessValue: Buffer.from("{}").toString("base64") },
+      };
+    },
+  };
+
+  await client.submit(
+    wallet,
+    "alice.testnet",
+    "submit_evidence",
+    {
+      commitment_id: "1",
+      version: 1,
+      reference: "https://example.com/evidence.json",
+      content_hash: "a".repeat(64),
+    },
+    0n,
+  );
+});
+
+test("Rust u64 write identifiers serialize as numbers while u32 and decimal-entry strings retain their types", () => {
+  assert.deepEqual(
+    serializeTransactionArgs(
+      {
+        target: {
+          commitment: { commitment_id: "12", version: 3 },
+        },
+      },
+      "open_dispute",
+    ),
+    { target: { commitment: { commitment_id: 12, version: 3 } } },
+  );
+  assert.deepEqual(
+    serializeTransactionArgs({ evidence_id: "23" }, "submit_review"),
+    { evidence_id: 23 },
+  );
+  assert.deepEqual(
+    serializeTransactionArgs({ dispute_id: "34" }, "resolve_dispute"),
+    { dispute_id: 34 },
+  );
+  assert.deepEqual(
+    serializeTransactionArgs(
+      { token_id: "18446744073709551615", deadline_at_ns: "1735689600123456789" },
+      "create_commitment_decimal",
+    ),
+    { token_id: "18446744073709551615", deadline_at_ns: "1735689600123456789" },
+  );
+  assert.throws(
+    () =>
+      serializeTransactionArgs(
+        { commitment_id: "9007199254740992" },
+        "submit_evidence",
+      ),
+    (error) =>
+      error instanceof RegistryTransactionError &&
+      error.kind === "configuration",
+  );
+});
+
 test("transaction failures and wallet rejections are surfaced with useful kinds", async () => {
   const failedWallet = {
     signAndSendTransaction: async () => ({
