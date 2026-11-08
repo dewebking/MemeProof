@@ -6,6 +6,7 @@
     "dev": "npm run dev --workspace @memeproof/web",
     "build": "npm run build --workspace @memeproof/web",
     "lint": "npm run lint --workspace @memeproof/web",
+    "test": "npm run test --workspace @memeproof/web",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

@@ -1,3 +1,5 @@
+import { safeRpcErrorMessage } from "./lock-rpc.ts";
+
 export type SourceToken = Record<string, unknown>;
 
 export type SyncedToken = {
@@ -194,8 +196,13 @@ export async function runRefreshJob(
   let runError: string | null = null;
   try {
     runId = await dependencies.startRun(options.trigger, base.startedAt);
-  } catch {
-    return { ...base, finishedAt: dependencies.now().toISOString() };
+  } catch (error) {
+    const errorCode = typeof error === "object" && error !== null && "code" in error && typeof error.code === "string"
+      ? error.code
+      : "refresh_run_start_failed";
+    const errorMessage = error instanceof Error ? safeRpcErrorMessage(error.message) : "Refresh run initialization failed.";
+    console.error("[sync] refresh run initialization failed", { diagnosticVersion: "lock-rpc-v1", errorCode, errorMessage });
+    throw new Error("Refresh run could not be started.");
   }
 
   let acquired = false;

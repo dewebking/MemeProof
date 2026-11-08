@@ -109,6 +109,16 @@ test("a lock storage RPC error is reported as a failed refresh, not successful c
   assert.equal(store.calls.finished[0][2], "refresh_lock_failed");
 });
 
+test("a refresh-run insert error is surfaced before lock acquisition instead of returning a skipped success", async () => {
+  let acquireCalled = false;
+  const store = deps({
+    startRun: async () => { throw Object.assign(new Error("run insert rejected"), { code: "42501" }); },
+    acquireLock: async () => { acquireCalled = true; return true; },
+  });
+  await assert.rejects(runRefreshJob(store, options), /Refresh run could not be started/);
+  assert.equal(acquireCalled, false);
+});
+
 test("a successful lock acquisition releases the lock after completing work", async () => {
   const store = deps();
   const summary = await runRefreshJob(store, options);

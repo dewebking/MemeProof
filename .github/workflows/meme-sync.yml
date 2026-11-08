@@ -15,8 +15,13 @@ jobs:
           MEMEPROOF_BASE_URL: ${{ secrets.MEMEPROOF_BASE_URL }}
           CRON_SECRET: ${{ secrets.CRON_SECRET }}
         run: |
-          test -n "$MEMEPROOF_BASE_URL"
-          test -n "$CRON_SECRET"
+          if [ -z "$MEMEPROOF_BASE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::notice title=Sync waiting for deployment configuration::Scheduled sync was skipped because MEMEPROOF_BASE_URL and/or CRON_SECRET is not configured. Configure both repository secrets after deployment."
+            echo "Sync status: skipped; no refresh endpoint was called."
+            exit 0
+          fi
+
+          echo "Sync status: calling the protected refresh endpoint."
           curl --fail-with-body --silent --show-error \
             --max-time 75 \
             -X POST "${MEMEPROOF_BASE_URL%/}/api/cron/sync" \

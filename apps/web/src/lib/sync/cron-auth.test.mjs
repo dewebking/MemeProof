@@ -30,3 +30,13 @@ test("authorized scheduled requests run and return the refresh summary", async (
   assert.equal(trigger, "scheduled");
   assert.deepEqual(await response.json(), summary);
 });
+
+test("cron reports refresh initialization failures as service unavailable", async () => {
+  const request = new Request("https://memeproof.test/api/cron/sync", { method: "POST", headers: { authorization: `Bearer ${secret}` } });
+  const response = await handleCronPost(request, {
+    authorized: true,
+    configured: true,
+    refresh: async () => { throw new Error("Refresh run could not be started."); },
+  });
+  assert.equal(response.status, 503);
+});

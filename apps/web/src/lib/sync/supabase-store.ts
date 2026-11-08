@@ -1,24 +1,54 @@
 import "server-only";
 import type { MarketAttempt, RefreshSummary, SourceToken, SyncedToken } from "./core";
+import { describeLockRpcResult, describeTransportError, isNextDynamicUsageError, lockWasAcquired, safeRpcErrorMessage } from "./lock-rpc";
+import { validateSupabaseServerKey } from "./supabase-key";
 
 type DbRow = Record<string, unknown>;
 
 export class SyncStoreError extends Error {
   public readonly code: string;
-  constructor(code: string) { super("Persistent synchronization storage is unavailable."); this.code = code; }
+  constructor(code: string, message = "Persistent synchronization storage is unavailable.") { super(message); this.code = code; }
 }
 
 function config() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL?.replace(/\/$/, "");
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  return url && key ? { url, key } : null;
+  if (!url || !key) return null;
+  let projectRef = "unknown";
+  try { projectRef = new URL(url).hostname.split(".")[0] || "unknown"; } catch { /* Keep diagnostic output free of the configured URL. */ }
+  const rawCommit = process.env.VERCEL_GIT_COMMIT_SHA;
+  const deployment = rawCommit && /^[a-f0-9]{7,40}$/i.test(rawCommit) ? rawCommit : "unknown";
+  const keyValidation = validateSupabaseServerKey(key, projectRef);
+  return { url, key, projectRef, deployment, keyValidation };
 }
 
-export function isSyncStoreConfigured(): boolean { return config() !== null; }
+function logInvalidKey(settings: NonNullable<ReturnType<typeof config>>) {
+  console.error("[sync] Supabase server key validation failed", {
+    diagnosticVersion: "lock-rpc-v1",
+    projectRef: settings.projectRef,
+    deployment: settings.deployment,
+    keyConfigured: settings.key.length > 0,
+    keyFormat: settings.keyValidation.format,
+    keyRole: settings.keyValidation.role,
+    keyMatchesProject: settings.keyValidation.matchesProject,
+    issue: settings.keyValidation.issue,
+  });
+}
+
+export function isSyncStoreConfigured(): boolean {
+  const settings = config();
+  if (!settings) return false;
+  if (!settings.keyValidation.valid) logInvalidKey(settings);
+  return settings.keyValidation.valid;
+}
 
 async function db(path: string, init: RequestInit = {}): Promise<Response> {
   const settings = config();
   if (!settings) throw new SyncStoreError("storage_not_configured");
+  if (!settings.keyValidation.valid) {
+    logInvalidKey(settings);
+    throw new SyncStoreError("storage_invalid_service_role_key", `Supabase server key validation failed: ${settings.keyValidation.issue}.`);
+  }
   let response: Response;
   try {
     response = await fetch(`${settings.url}/rest/v1/${path}`, {
@@ -33,8 +63,33 @@ async function db(path: string, init: RequestInit = {}): Promise<Response> {
       cache: "no-store",
       signal: AbortSignal.timeout(12_000),
     });
-  } catch { throw new SyncStoreError("storage_request_failed"); }
-  if (!response.ok) throw new SyncStoreError(`storage_http_${response.status}`);
+  } catch (error) {
+    if (isNextDynamicUsageError(error)) throw error;
+    const diagnostic = describeTransportError(error);
+    console.error("[sync] Supabase transport failed before HTTP response", {
+      diagnosticVersion: "lock-rpc-v1",
+      projectRef: settings.projectRef,
+      deployment: settings.deployment,
+      operation: path.split("?")[0],
+      serviceRoleKeyConfigured: true,
+      serviceRoleKeyRole: settings.keyValidation.role,
+      ...diagnostic,
+    });
+    throw new SyncStoreError("storage_request_failed", diagnostic.errorMessage);
+  }
+  if (!response.ok) {
+    let code = `storage_http_${response.status}`;
+    let message = `Supabase request failed with HTTP ${response.status}.`;
+    try {
+      const payload: unknown = await response.clone().json();
+      if (typeof payload === "object" && payload !== null) {
+        const row = payload as Record<string, unknown>;
+        if (typeof row.code === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(row.code)) code = row.code;
+        if (typeof row.message === "string") message = safeRpcErrorMessage(row.message);
+      }
+    } catch { /* Preserve the status-only diagnostic for non-JSON errors. */ }
+    throw new SyncStoreError(code, message);
+  }
   return response;
 }
 
@@ -70,7 +125,28 @@ async function rpc(name: string, body: DbRow): Promise<unknown> {
 
 export const syncStore = {
   async acquireLock(owner: string, leaseSeconds: number) {
-    return await rpc("acquire_memeproof_refresh_lock", { p_owner: owner, p_lease_seconds: leaseSeconds }) === true;
+    const settings = config();
+    try {
+      const result = await rpc("acquire_memeproof_refresh_lock", { p_owner: owner, p_lease_seconds: leaseSeconds });
+      const diagnostic = describeLockRpcResult(result);
+      console.info("[sync] refresh lock RPC completed", {
+        diagnosticVersion: "lock-rpc-v1",
+        projectRef: settings?.projectRef ?? "unconfigured",
+        deployment: settings?.deployment ?? "unknown",
+        ...diagnostic,
+      });
+      return lockWasAcquired(result);
+    } catch (error) {
+      const storageError = error instanceof SyncStoreError ? error : null;
+      console.error("[sync] refresh lock RPC failed", {
+        diagnosticVersion: "lock-rpc-v1",
+        projectRef: settings?.projectRef ?? "unconfigured",
+        deployment: settings?.deployment ?? "unknown",
+        errorCode: storageError?.code ?? "storage_request_failed",
+        errorMessage: safeRpcErrorMessage(storageError?.message ?? "Supabase RPC request failed."),
+      });
+      throw error;
+    }
   },
   async releaseLock(owner: string) { await rpc("release_memeproof_refresh_lock", { p_owner: owner }); },
   async startRun(trigger: "scheduled" | "manual", startedAt: string): Promise<string> {
