@@ -32,7 +32,7 @@ export function filterDiscoverTokens<T extends DiscoverToken>(
   return tokens.filter((token) => {
     const matchesSearch =
       !search ||
-      ["name", "symbol", "token_id", "owner"].some((key) =>
+      ["name", "symbol", "token_id", "owner", "account_id", "creator", "network", "network_id"].some((key) =>
         searchableText(token, key)?.trim().toLowerCase().includes(search),
       );
     return matchesSearch && matchesLaunchStatus(token, status);

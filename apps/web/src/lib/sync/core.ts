@@ -33,8 +33,18 @@ export type RefreshSummary = {
   successfulMarketMatches: number;
   unavailableMarketRecords: number;
   failedProviderRequests: number;
+  sourcePagesFetched: number | null;
+  sourceRecordsReceived: number;
+  sourceUniqueRecords: number;
   startedAt: string;
   finishedAt: string;
+};
+
+export type SourceFeedResult = {
+  records: SourceToken[];
+  pagesFetched: number;
+  recordsReceived: number;
+  uniqueRecords: number;
 };
 
 export type MarketAttempt = {
@@ -152,7 +162,7 @@ export type RefreshJobDependencies = {
   finishRun(id: string, summary: RefreshSummary, errorCode: string | null): Promise<void>;
   getSyncState(): Promise<{ lastSuccessAt: string | null; nextRetryAt: string | null; failureCount: number }>;
   getExistingTokens(): Promise<SyncedToken[]>;
-  fetchSourceTokens(): Promise<SourceToken[]>;
+  fetchSourceTokens(): Promise<SourceToken[] | SourceFeedResult>;
   upsertTokens(tokens: SyncedToken[], seenAt: string): Promise<void>;
   markSyncSuccessful(at: string): Promise<void>;
   markSyncFailed(nextRetryAt: string, failureCount: number): Promise<void>;
@@ -188,6 +198,9 @@ export async function runRefreshJob(
     successfulMarketMatches: 0,
     unavailableMarketRecords: 0,
     failedProviderRequests: 0,
+    sourcePagesFetched: null,
+    sourceRecordsReceived: 0,
+    sourceUniqueRecords: 0,
     startedAt: started.toISOString(),
     finishedAt: started.toISOString(),
   };
@@ -224,7 +237,11 @@ export async function runRefreshJob(
     const syncIsDue = intervalElapsed && retryElapsed;
     if (syncIsDue) {
       try {
-        const sourceRecords = await dependencies.fetchSourceTokens();
+        const source = await dependencies.fetchSourceTokens();
+        const sourceRecords = Array.isArray(source) ? source : source.records;
+        base.sourcePagesFetched = Array.isArray(source) ? null : source.pagesFetched;
+        base.sourceRecordsReceived = Array.isArray(source) ? sourceRecords.length : source.recordsReceived;
+        base.sourceUniqueRecords = Array.isArray(source) ? sourceRecords.length : source.uniqueRecords;
         const changes = prepareSyncChanges(sourceRecords, await dependencies.getExistingTokens());
         await dependencies.upsertTokens(changes.rows, dependencies.now().toISOString());
         await dependencies.markSyncSuccessful(dependencies.now().toISOString());

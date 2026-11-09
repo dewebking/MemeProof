@@ -1,6 +1,26 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { withRetry } from "./retry.ts";
+import { retryAfterDelayMs, withRetry } from "./retry.ts";
+
+test("parses Retry-After as either delay seconds or an HTTP date", () => {
+  const now = Date.parse("2026-11-09T12:00:00.000Z");
+  assert.equal(retryAfterDelayMs("0.25", now), 250);
+  assert.equal(retryAfterDelayMs("Mon, 09 Nov 2026 12:00:02 GMT", now), 2000);
+  assert.equal(retryAfterDelayMs("not-a-date", now), null);
+});
+
+test("retry delay never runs before Retry-After", async () => {
+  const waits = [];
+  let calls = 0;
+  await withRetry(
+    async () => { calls += 1; if (calls === 1) throw new Error("rate limited"); return "ok"; },
+    () => true,
+    [10],
+    async (milliseconds) => { waits.push(milliseconds); },
+    (_error, fallback) => Math.max(fallback, 250),
+  );
+  assert.deepEqual(waits, [250]);
+});
 
 test("retries a transient failure with bounded backoff and returns the live result", async () => {
   let calls = 0;

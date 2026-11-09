@@ -7,3 +7,11 @@ target/
 .env.*
 !.env.example
 *.log
+
+# Local browser automation profiles
+.cta-check-profile/
+.edge-cdp-profile/
+.edge-cdp-profile-three/
+
+# TypeScript build cache
+*.tsbuildinfo

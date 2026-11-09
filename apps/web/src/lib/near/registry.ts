@@ -191,7 +191,29 @@ export type RegistryTransactionFailureKind =
   | "wallet_rejected"
   | "storage_deposit"
   | "contract"
-  | "transaction";
+  | "transaction"
+  | "submission_uncertain";
+
+export type RegistryReadFailureKind =
+  | "rpc_unavailable"
+  | "rate_limited"
+  | "timeout"
+  | "contract_call"
+  | "invalid_response"
+  | "configuration";
+
+export class RegistryReadError extends Error {
+  constructor(
+    message: string,
+    readonly kind: RegistryReadFailureKind,
+    readonly retryAfterMs?: number,
+    options?: ErrorOptions,
+    readonly httpStatus?: number,
+  ) {
+    super(message, options);
+    this.name = "RegistryReadError";
+  }
+}
 
 export class RegistryTransactionError extends Error {
   constructor(
@@ -210,6 +232,12 @@ export interface RegistryTransactionResult<T> {
 }
 
 const DEFAULT_RPC_URL = "https://rpc.testnet.near.org";
+const SECONDARY_TESTNET_RPC_URL = "https://rpc.testnet.fastnear.com";
+const DEFAULT_RPC_TIMEOUT_MS = 4_500;
+const DEFAULT_RPC_RETRIES_PER_PROVIDER = 1;
+const DEFAULT_RPC_BACKOFF_BASE_MS = 180;
+const DEFAULT_RPC_BACKOFF_MAX_MS = 1_500;
+const VIEW_CACHE_TTL_MS = 5_000;
 const FUNCTION_CALL_GAS = "100000000000000";
 const PAGE_LIMIT = 50;
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
@@ -250,7 +278,7 @@ function checkedPageLimit(limit: number): number {
 function registryConfig(): RegistryClientConfig {
   const networkId = process.env.NEXT_PUBLIC_NEAR_NETWORK_ID ?? "testnet";
   if (networkId !== "testnet") {
-    throw new RegistryTransactionError(
+    throw new RegistryReadError(
       "MemeProof registry actions are restricted to NEAR testnet.",
       "configuration",
     );
@@ -258,7 +286,7 @@ function registryConfig(): RegistryClientConfig {
 
   const contractId = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ID?.trim();
   if (!contractId) {
-    throw new RegistryTransactionError(
+    throw new RegistryReadError(
       "Set NEXT_PUBLIC_REGISTRY_CONTRACT_ID to the deployed testnet registry account.",
       "configuration",
     );
@@ -267,7 +295,7 @@ function registryConfig(): RegistryClientConfig {
     contractId.length > 64 ||
     !/^[a-z0-9]+(?:[._-][a-z0-9]+)*\.testnet$/.test(contractId)
   ) {
-    throw new RegistryTransactionError(
+    throw new RegistryReadError(
       "NEXT_PUBLIC_REGISTRY_CONTRACT_ID must be a valid NEAR testnet account ID.",
       "configuration",
     );
@@ -275,9 +303,20 @@ function registryConfig(): RegistryClientConfig {
 
   return {
     networkId,
-    rpcUrl: process.env.NEXT_PUBLIC_NEAR_RPC_URL?.trim() || DEFAULT_RPC_URL,
+    rpcUrl: validateTestnetRpcUrl(process.env.NEXT_PUBLIC_NEAR_RPC_URL?.trim() || DEFAULT_RPC_URL),
     contractId,
   };
+}
+
+function validateTestnetRpcUrl(value: string): string {
+  try {
+    const url = new URL(value);
+    const labels = url.hostname.split(".");
+    if (url.protocol !== "https:" || !labels.includes("testnet") || labels.includes("mainnet")) throw new Error();
+    return url.toString();
+  } catch {
+    throw new RegistryReadError("NEAR RPC URL must be a valid HTTPS testnet endpoint.", "configuration");
+  }
 }
 
 function jsonWithBigInts(value: unknown): string {
@@ -370,8 +409,67 @@ function getRpcError(body: unknown): string | null {
   return null;
 }
 
+export interface RegistryRpcReadOptions {
+  fetch?: typeof fetch;
+  timeoutMs?: number;
+  retriesPerProvider?: number;
+  backoffBaseMs?: number;
+  backoffMaxMs?: number;
+  random?: () => number;
+  sleep?: (milliseconds: number) => Promise<void>;
+  onDiagnostic?: (details: { method: string; provider: "primary" | "secondary"; failure: RegistryReadFailureKind; httpStatus?: number }) => void;
+}
+
+interface RpcProvider {
+  name: "primary" | "secondary";
+  url: string;
+}
+
+function retryAfterMilliseconds(value: string | null, now = Date.now()): number | undefined {
+  if (!value) return undefined;
+  const seconds = Number(value);
+  if (Number.isFinite(seconds) && seconds >= 0) return Math.ceil(seconds * 1_000);
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - now) : undefined;
+}
+
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+function isRetryableReadError(error: RegistryReadError): boolean {
+  return error.kind === "rpc_unavailable" || error.kind === "rate_limited" || error.kind === "timeout";
+}
+
 export class NearRegistryClient {
-  constructor(private readonly config: RegistryClientConfig) {}
+  private readonly activeViews = new Map<string, Promise<unknown>>();
+  private readonly cachedViews = new Map<string, { expiresAt: number; promise: Promise<unknown> }>();
+  private readCacheGeneration = 0;
+  private readonly readOptions: Required<RegistryRpcReadOptions>;
+
+  constructor(
+    private readonly config: RegistryClientConfig,
+    readOptions: RegistryRpcReadOptions = {},
+  ) {
+    let primaryUrl: URL;
+    try { primaryUrl = new URL(config.rpcUrl); } catch {
+      throw new RegistryReadError("NEAR RPC URL must be an HTTPS testnet endpoint.", "configuration");
+    }
+    const primaryLabels = primaryUrl.hostname.split(".");
+    if (config.networkId !== "testnet" || primaryUrl.protocol !== "https:" || !primaryLabels.includes("testnet") || primaryLabels.includes("mainnet")) {
+      throw new RegistryReadError("NEAR RPC URL must be an HTTPS testnet endpoint.", "configuration");
+    }
+    this.readOptions = {
+      fetch: readOptions.fetch ?? ((input, init) => globalThis.fetch(input, init)),
+      timeoutMs: readOptions.timeoutMs ?? DEFAULT_RPC_TIMEOUT_MS,
+      retriesPerProvider: readOptions.retriesPerProvider ?? DEFAULT_RPC_RETRIES_PER_PROVIDER,
+      backoffBaseMs: readOptions.backoffBaseMs ?? DEFAULT_RPC_BACKOFF_BASE_MS,
+      backoffMaxMs: readOptions.backoffMaxMs ?? DEFAULT_RPC_BACKOFF_MAX_MS,
+      random: readOptions.random ?? Math.random,
+      sleep: readOptions.sleep ?? defaultSleep,
+      onDiagnostic: readOptions.onDiagnostic ?? ((details) => console.warn("[MemeProof] NEAR testnet read failed", details)),
+    };
+  }
 
   static fromEnvironment(): NearRegistryClient {
     return new NearRegistryClient(registryConfig());
@@ -381,79 +479,166 @@ export class NearRegistryClient {
     methodName: string,
     args: Record<string, unknown> = {},
   ): Promise<T> {
-    let response: Response;
+    let normalizedArgs: Record<string, unknown>;
     try {
-      response = await fetch(this.config.rpcUrl, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          jsonrpc: "2.0",
-          id: "memeproof-registry-view",
-          method: "query",
-          params: {
-            request_type: "call_function",
-            finality: "final",
-            account_id: this.config.contractId,
-            method_name: methodName,
-            args_base64: encodeBase64Utf8(
-              jsonWithBigInts(normalizeViewArguments(args)),
-            ),
-          },
-        }),
-      });
+      normalizedArgs = normalizeViewArguments(args);
     } catch (cause) {
-      throw new RegistryTransactionError(
-        "Could not reach the configured NEAR testnet RPC.",
-        "rpc",
-        { cause },
-      );
+      throw new RegistryReadError("Invalid registry view arguments.", "configuration", undefined, { cause });
+    }
+    const key = `${methodName}:${jsonWithBigInts(normalizedArgs)}`;
+    const cached = this.cachedViews.get(key);
+    if (cached && cached.expiresAt > Date.now()) return cached.promise as Promise<T>;
+    const existing = this.activeViews.get(key);
+    if (existing) return existing as Promise<T>;
+
+    const request = this.readFromProviders<T>(methodName, normalizedArgs);
+    const generation = this.readCacheGeneration;
+    this.activeViews.set(key, request);
+    request.then((value) => {
+      if (generation === this.readCacheGeneration) {
+        this.cachedViews.set(key, { expiresAt: Date.now() + VIEW_CACHE_TTL_MS, promise: Promise.resolve(value) });
+      }
+    }, () => undefined);
+    void request.finally(() => {
+      if (this.activeViews.get(key) === request) this.activeViews.delete(key);
+    }).catch(() => undefined);
+    return request;
+  }
+
+  clearReadCache(): void {
+    this.readCacheGeneration += 1;
+    this.cachedViews.clear();
+    this.activeViews.clear();
+  }
+
+  private async readFromProviders<T>(
+    methodName: string,
+    args: Record<string, unknown>,
+  ): Promise<T> {
+    const providers: RpcProvider[] = [
+      { name: "primary", url: this.config.rpcUrl },
+      { name: "secondary", url: SECONDARY_TESTNET_RPC_URL },
+    ];
+    const candidates = providers.filter((provider, index, all) => all.findIndex((item) => item.url.replace(/\/$/, "") === provider.url.replace(/\/$/, "")) === index);
+    const errors: RegistryReadError[] = [];
+
+    for (const provider of candidates) {
+      const maxAttempts = this.readOptions.retriesPerProvider + 1;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        try {
+          return await this.requestView<T>(provider, methodName, args);
+        } catch (cause) {
+          const error = cause instanceof RegistryReadError
+            ? cause
+            : new RegistryReadError("NEAR testnet RPC is unavailable.", "rpc_unavailable", undefined, { cause });
+          errors.push(error);
+          this.readOptions.onDiagnostic({
+            method: methodName,
+            provider: provider.name,
+            failure: error.kind,
+            ...(error.httpStatus === undefined ? {} : { httpStatus: error.httpStatus }),
+          });
+          if (error.kind === "contract_call" || error.kind === "configuration") throw error;
+          if (!isRetryableReadError(error) || attempt + 1 >= maxAttempts) break;
+
+          const backoff = Math.min(
+            this.readOptions.backoffBaseMs * 2 ** (errors.length - 1) * (0.75 + this.readOptions.random() * 0.5),
+            this.readOptions.backoffMaxMs,
+          );
+          const waitMs = Math.max(backoff, error.retryAfterMs ?? 0);
+          // A long Retry-After is honored by not retrying that provider; the independent testnet provider may still be tried now.
+          if (waitMs > this.readOptions.backoffMaxMs) break;
+          await this.readOptions.sleep(waitMs);
+        }
+      }
     }
 
-    if (!response.ok) {
-      throw new RegistryTransactionError(
-        `NEAR RPC returned HTTP ${response.status}.`,
-        "rpc",
-      );
+    const last = errors[errors.length - 1];
+    if (!last) throw new RegistryReadError("NEAR testnet RPC is unavailable.", "rpc_unavailable");
+    if (last.kind === "contract_call" || last.kind === "configuration") throw last;
+    const kinds = new Set(errors.map((error) => error.kind));
+    if (kinds.has("rate_limited")) {
+      throw new RegistryReadError("NEAR testnet RPC providers are rate limited. Try again shortly.", "rate_limited", undefined, { cause: last });
     }
+    if (kinds.has("timeout")) {
+      throw new RegistryReadError("NEAR testnet RPC request timed out. Try again.", "timeout", undefined, { cause: last });
+    }
+    if (kinds.has("invalid_response")) {
+      throw new RegistryReadError("NEAR testnet RPC returned an invalid response.", "invalid_response", undefined, { cause: last });
+    }
+    throw new RegistryReadError("NEAR testnet RPC is unavailable. Try again.", "rpc_unavailable", undefined, { cause: last });
+  }
 
-    let body: unknown;
+  private async requestView<T>(
+    provider: RpcProvider,
+    methodName: string,
+    args: Record<string, unknown>,
+  ): Promise<T> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.readOptions.timeoutMs);
     try {
-      body = await response.json();
-    } catch (cause) {
-      throw new RegistryTransactionError(
-        "NEAR RPC returned an invalid JSON response.",
-        "rpc",
-        { cause },
-      );
-    }
-    const rpcError = getRpcError(body);
-    if (rpcError) throw new RegistryTransactionError(rpcError, "rpc");
+      let response: Response;
+      try {
+        response = await this.readOptions.fetch(provider.url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          signal: controller.signal,
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: "memeproof-registry-view",
+            method: "query",
+            params: {
+              request_type: "call_function",
+              finality: "final",
+              account_id: this.config.contractId,
+              method_name: methodName,
+              args_base64: encodeBase64Utf8(jsonWithBigInts(args)),
+            },
+          }),
+        });
+      } catch (cause) {
+        if (controller.signal.aborted) throw new RegistryReadError("NEAR testnet RPC request timed out.", "timeout", undefined, { cause });
+        throw new RegistryReadError("Could not reach NEAR testnet RPC (network or browser access failure).", "rpc_unavailable", undefined, { cause });
+      }
 
-    const rpcResult = (body as { result?: { result?: number[] } }).result
-      ?.result;
-    if (
-      !Array.isArray(rpcResult) ||
-      !rpcResult.every(
-        (byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255,
-      )
-    ) {
-      throw new RegistryTransactionError(
-        "NEAR RPC returned an invalid view result.",
-        "rpc",
-      );
-    }
+      if (!response.ok) {
+        if (response.status === 429) {
+          throw new RegistryReadError("NEAR testnet RPC rate limited the request.", "rate_limited", retryAfterMilliseconds(response.headers.get("retry-after")), undefined, response.status);
+        }
+        if (response.status === 408 || response.status === 504) {
+          throw new RegistryReadError(`NEAR testnet RPC request timed out (HTTP ${response.status}).`, "timeout", undefined, undefined, response.status);
+        }
+        if (response.status >= 500) {
+          throw new RegistryReadError(`NEAR testnet RPC is unavailable (HTTP ${response.status}).`, "rpc_unavailable", undefined, undefined, response.status);
+        }
+        throw new RegistryReadError(`NEAR testnet RPC rejected the read request (HTTP ${response.status}).`, "invalid_response", undefined, undefined, response.status);
+      }
 
-    try {
-      const text = new TextDecoder("utf-8", { fatal: true }).decode(
-        new Uint8Array(rpcResult),
-      );
-      return parseNearJson<T>(text);
-    } catch (cause) {
-      throw new RegistryTransactionError(
-        "NEAR RPC returned an invalid view result payload.",
-        "rpc",
-        { cause },
-      );
+      let body: unknown;
+      try {
+        body = await response.json();
+      } catch (cause) {
+        if (controller.signal.aborted) throw new RegistryReadError("NEAR testnet RPC request timed out.", "timeout", undefined, { cause });
+        throw new RegistryReadError("NEAR testnet RPC returned invalid JSON.", "invalid_response", undefined, { cause });
+      }
+      if (!body || typeof body !== "object" || Array.isArray(body)) {
+        throw new RegistryReadError("NEAR testnet RPC returned an invalid response envelope.", "invalid_response");
+      }
+      const rpcError = getRpcError(body);
+      if (rpcError) throw new RegistryReadError(`NEAR contract call failed: ${rpcError}`, "contract_call");
+
+      const rpcResult = (body as { result?: { result?: number[] } }).result?.result;
+      if (!Array.isArray(rpcResult) || !rpcResult.every((byte) => Number.isInteger(byte) && byte >= 0 && byte <= 255)) {
+        throw new RegistryReadError("NEAR testnet RPC returned an invalid view result.", "invalid_response");
+      }
+      try {
+        const text = new TextDecoder("utf-8", { fatal: true }).decode(new Uint8Array(rpcResult));
+        return parseNearJson<T>(text);
+      } catch (cause) {
+        throw new RegistryReadError("NEAR testnet RPC returned an invalid view result payload.", "invalid_response", undefined, { cause });
+      }
+    } finally {
+      clearTimeout(timeout);
     }
   }
 
@@ -490,11 +675,12 @@ export class NearRegistryClient {
         ],
       });
     } catch (cause) {
+      if (cause instanceof RegistryTransactionError) throw cause;
       throw normalizeTransactionError(cause);
     }
 
     const failed = failedOutcomeMessage(outcome);
-    if (failed) throw normalizeTransactionError(failed);
+    if (failed) throw normalizeTransactionError(failed, false);
 
     const result = successfulReturnValue<T>(outcome);
     return {
@@ -792,6 +978,19 @@ export function nearToYocto(value: string): bigint {
 }
 
 export function explainTransactionError(cause: unknown): string {
+  if (cause instanceof RegistryReadError) {
+    switch (cause.kind) {
+      case "rpc_unavailable": return "NEAR testnet RPC is unavailable right now. Try again shortly.";
+      case "rate_limited": return "NEAR testnet RPC is rate limited. Wait briefly, then try again.";
+      case "timeout": return "The NEAR testnet RPC request timed out. Try again.";
+      case "contract_call": return cause.message;
+      case "invalid_response": return "NEAR testnet RPC returned an invalid response. Try again; if this continues, report it to support.";
+      case "configuration": return cause.message;
+    }
+  }
+  if (cause instanceof RegistryTransactionError && cause.kind === "submission_uncertain") {
+    return "The wallet request ended before MemeProof could confirm its result. Check the transaction status in your wallet or the NEAR testnet explorer before trying again.";
+  }
   const raw = cause instanceof Error ? cause.message : String(cause);
   if (/attached deposit does not cover .*storage/i.test(raw)) {
     return "The attached storage deposit was insufficient. Increase the storage allowance and retry.";
@@ -802,7 +1001,8 @@ export function explainTransactionError(cause: unknown): string {
   return raw;
 }
 
-function normalizeTransactionError(cause: unknown): RegistryTransactionError {
+function normalizeTransactionError(cause: unknown, submissionUncertain = true): RegistryTransactionError {
+  if (cause instanceof RegistryTransactionError) return cause;
   const raw = cause instanceof Error ? cause.message : errorMessage(cause);
   if (/attached deposit does not cover .*storage/i.test(raw)) {
     return new RegistryTransactionError(
@@ -818,7 +1018,13 @@ function normalizeTransactionError(cause: unknown): RegistryTransactionError {
       { cause },
     );
   }
-  return new RegistryTransactionError(raw, "transaction", { cause });
+  return submissionUncertain
+    ? new RegistryTransactionError(
+        "The wallet request ended before the transaction result was confirmed. Check transaction status before trying again; MemeProof will not resubmit it automatically.",
+        "submission_uncertain",
+        { cause },
+      )
+    : new RegistryTransactionError(raw, "transaction", { cause });
 }
 
 function failedOutcomeMessage(outcome: unknown): string | null {
@@ -852,8 +1058,8 @@ function successfulReturnValue<T>(outcome: unknown): T {
   const encoded = status?.SuccessValue;
   if (typeof encoded !== "string") {
     throw new RegistryTransactionError(
-      "The transaction completed without a contract return value.",
-      "transaction",
+      "The wallet returned no contract result. Check transaction status before trying again; MemeProof will not resubmit it automatically.",
+      "submission_uncertain",
     );
   }
   try {
@@ -864,8 +1070,8 @@ function successfulReturnValue<T>(outcome: unknown): T {
     return parseNearJson<T>(new TextDecoder().decode(bytes));
   } catch (cause) {
     throw new RegistryTransactionError(
-      "The transaction succeeded, but its contract return value could not be decoded.",
-      "transaction",
+      "The wallet reports transaction success, but MemeProof could not read its contract result. Check transaction status before trying again.",
+      "submission_uncertain",
       { cause },
     );
   }

@@ -7,7 +7,7 @@ const source = await readFile(new URL("./registry-data.ts", import.meta.url), "u
 const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 },
 }).outputText.replace('from "./registry"', 'from "data:text/javascript,export {};"');
-const { getAllHistoryEvents, getCommitmentsForCreator, getRegistrySummary } = await import(
+const { getAllHistoryEvents, getAllCommitments, getAllDisputes, getAllEvidences, getAllReviews, getReviewsForEvidence, getCommitmentVersionsForCommitment, invalidateRegistryDataCache, getCommitmentsForCreator, getRegistrySummary } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
 );
 
@@ -23,6 +23,95 @@ test("history and token pages are followed through the exclusive cursor", async 
   });
   assert.deepEqual(cursors, [null, 1]);
   assert.deepEqual(events.map(({ id }) => id), [1, 2]);
+});
+
+test("evidence, review, and dispute selectors page through on-chain records", async () => {
+  const pages = (name) => {
+    const cursors = [];
+    return {
+      cursors,
+      fetch: async (cursor, limit) => {
+        cursors.push([cursor, limit]);
+        return cursor === null
+          ? { records: [{ id: `${name}-1` }], next_cursor: `${name}-1` }
+          : { records: [{ id: `${name}-2` }], next_cursor: null };
+      },
+    };
+  };
+  const evidence = pages("evidence");
+  const reviews = pages("review");
+  const disputes = pages("dispute");
+  assert.deepEqual((await getAllEvidences({ getEvidences: evidence.fetch })).map(({ id }) => id), ["evidence-1", "evidence-2"]);
+  assert.deepEqual((await getAllReviews({ getReviews: reviews.fetch })).map(({ id }) => id), ["review-1", "review-2"]);
+  assert.deepEqual((await getAllDisputes({ getDisputes: disputes.fetch })).map(({ id }) => id), ["dispute-1", "dispute-2"]);
+  assert.deepEqual(evidence.cursors, [[null, 50], ["evidence-1", 50]]);
+  assert.deepEqual(reviews.cursors, [[null, 50], ["review-1", 50]]);
+  assert.deepEqual(disputes.cursors, [[null, 50], ["dispute-1", 50]]);
+});
+
+test("public commitment selector uses created events and preserves decimal u64 IDs", async () => {
+  const id = "9007199254740993";
+  const records = await getAllCommitments({
+    getHistoryEvents: async () => ({
+      records: [
+        { id: 1, actor: "alice.testnet", occurred_at_ns: 1, kind: { commitment_created: { commitment_id: id } } },
+        { id: 2, actor: "alice.testnet", occurred_at_ns: 2, kind: { commitment_amended: { commitment_id: id, version: 2 } } },
+      ], next_cursor: null,
+    }),
+    getCommitment: async (requestedId) => ({ commitment: { id: requestedId, created_at_ns: 10 }, current_version: { version: 2 } }),
+  });
+  assert.equal(records.length, 1);
+  assert.equal(records[0].commitment.id, id);
+});
+
+test("identical registry list scans share a fresh result and can be invalidated", async () => {
+  let calls = 0;
+  const client = {
+    getHistoryEvents: async () => {
+      calls += 1;
+      return { records: [{ id: 1, actor: "alice.testnet", occurred_at_ns: 1, kind: {} }], next_cursor: null };
+    },
+  };
+  const first = await getAllHistoryEvents(client);
+  const second = await getAllHistoryEvents(client);
+  assert.equal(calls, 1);
+  assert.deepEqual(second, first);
+  invalidateRegistryDataCache();
+  await getAllHistoryEvents(client);
+  assert.equal(calls, 2);
+});
+
+test("review selector fetches only the selected evidence review pages", async () => {
+  const cursors = [];
+  const reviews = await getReviewsForEvidence({
+    getReviewsByEvidence: async (evidenceId, cursor, limit) => {
+      assert.equal(String(evidenceId), "77");
+      assert.equal(limit, 50);
+      cursors.push(cursor);
+      return cursor === null
+        ? { records: [{ id: 1, evidence_id: "77" }], next_cursor: "1" }
+        : { records: [{ id: 2, evidence_id: "77" }], next_cursor: null };
+    },
+  }, "77");
+  assert.deepEqual(cursors, [null, "1"]);
+  assert.deepEqual(reviews.map(({ id }) => id), [1, 2]);
+});
+
+test("commitment version history is fetched only for a selected commitment and reuses its cached pages", async () => {
+  const requests = [];
+  const client = {
+    getCommitmentVersions: async (commitmentId, cursor, limit) => {
+      requests.push([String(commitmentId), cursor, limit]);
+      return cursor === null
+        ? { versions: [{ version: 2 }, { version: 1 }], next_cursor: 2 }
+        : { versions: [{ version: 3 }], next_cursor: null };
+    },
+  };
+  const versions = await getCommitmentVersionsForCommitment(client, "77");
+  assert.deepEqual(versions.map(({ version }) => version), [3, 2, 1]);
+  assert.deepEqual(requests, [["77", null, 50], ["77", 2, 50]]);
+  await getCommitmentVersionsForCommitment(client, "77");
+  assert.equal(requests.length, 2);
 });
 
 test("creator commitments come only from their creation events and are deduplicated", async () => {

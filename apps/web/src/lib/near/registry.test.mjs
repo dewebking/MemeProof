@@ -15,6 +15,7 @@ const compiled = ts.transpileModule(source, {
 }).outputText;
 const {
   NearRegistryClient,
+  RegistryReadError,
   RegistryTransactionError,
   serializeTransactionArgs,
 } = await import(
@@ -25,6 +26,7 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
+  client.clearReadCache();
 });
 
 function rpcResponseText(text) {
@@ -40,6 +42,29 @@ const client = new NearRegistryClient({
   rpcUrl: "https://rpc.testnet.near.org",
   contractId: "registry.testnet",
 });
+
+function makeReadClient(fetchImpl, options = {}) {
+  return new NearRegistryClient({
+    networkId: "testnet",
+    rpcUrl: "https://primary.testnet.example",
+    contractId: "registry.testnet",
+  }, {
+    fetch: fetchImpl,
+    sleep: async () => undefined,
+    random: () => 0,
+    onDiagnostic: () => undefined,
+    ...options,
+  });
+}
+
+function httpResponse(status, body, headers = {}) {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    headers: { get: (name) => headers[name.toLowerCase()] ?? null },
+    json: async () => body,
+  };
+}
 
 test("view calls encode u64 cursors exactly and decode large response integers", async () => {
   const cursor = "18446744073709551614";
@@ -61,15 +86,180 @@ test("view calls encode u64 cursors exactly and decode large response integers",
 });
 
 test("view calls report RPC errors and reject invalid page limits", async () => {
-  globalThis.fetch = async () => ({
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return ({
     ok: true,
     json: async () => ({ error: { message: "Unknown method" } }),
-  });
-  await assert.rejects(client.getConfig(), {
-    kind: "rpc",
-    message: "Unknown method",
-  });
+    });
+  };
+  await assert.rejects(client.getConfig(), (error) =>
+    error instanceof RegistryReadError
+      && error.kind === "contract_call"
+      && /Unknown method/.test(error.message),
+  );
+  assert.equal(calls, 1, "permanent contract errors are not retried or sent to a second provider");
   assert.throws(() => client.getTokens(null, 51), { kind: "configuration" });
+});
+
+test("read-only RPC uses the configured primary when it succeeds", async () => {
+  const calls = [];
+  const readClient = makeReadClient(async (url) => {
+    calls.push(url);
+    return rpcResponseText('{"network_id":"testnet"}');
+  });
+  assert.deepEqual(await readClient.getConfig(), { network_id: "testnet" });
+  assert.deepEqual(calls, ["https://primary.testnet.example"]);
+});
+
+test("primary RPC transient failure retries then falls back to FastNear testnet", async () => {
+  const calls = [];
+  const readClient = makeReadClient(async (url) => {
+    calls.push(url);
+    if (url.includes("primary")) return httpResponse(503, {});
+    return rpcResponseText('{"network_id":"testnet"}');
+  });
+  assert.deepEqual(await readClient.getConfig(), { network_id: "testnet" });
+  assert.deepEqual(calls, [
+    "https://primary.testnet.example",
+    "https://primary.testnet.example",
+    "https://rpc.testnet.fastnear.com",
+  ]);
+  assert.ok(calls.every((url) => !url.includes("mainnet")));
+});
+
+test("both testnet read providers unavailable returns a classified error", async () => {
+  const calls = [];
+  const readClient = makeReadClient(async (url) => {
+    calls.push(url);
+    return httpResponse(503, {});
+  });
+  await assert.rejects(readClient.getConfig(), (error) =>
+    error instanceof RegistryReadError && error.kind === "rpc_unavailable",
+  );
+  assert.equal(calls.length, 4);
+  assert.ok(calls.every((url) => !url.includes("mainnet")));
+});
+
+test("invalid JSON response fails over and remains classifiable if both providers return malformed JSON", async () => {
+  let calls = 0;
+  const readClient = makeReadClient(async () => {
+    calls += 1;
+    return { ok: true, status: 200, headers: { get: () => null }, json: async () => { throw new SyntaxError("bad json"); } };
+  });
+  await assert.rejects(readClient.getConfig(), (error) =>
+    error instanceof RegistryReadError && error.kind === "invalid_response",
+  );
+  assert.equal(calls, 2, "malformed data is not retried against the same provider");
+});
+
+test("timed out read is retried once and can then succeed", async () => {
+  let calls = 0;
+  const readClient = makeReadClient(async (_url, init) => {
+    calls += 1;
+    if (calls === 1) {
+      return new Promise((_resolve, reject) => {
+        init.signal.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
+      });
+    }
+    return rpcResponseText('{"network_id":"testnet"}');
+  }, { timeoutMs: 5 });
+  assert.deepEqual(await readClient.getConfig(), { network_id: "testnet" });
+  assert.equal(calls, 2);
+});
+
+test("HTTP 429 honors Retry-After before retrying the same testnet provider", async () => {
+  const waits = [];
+  let calls = 0;
+  const readClient = makeReadClient(async () => {
+    calls += 1;
+    if (calls === 1) return httpResponse(429, {}, { "retry-after": "0.25" });
+    return rpcResponseText('{"network_id":"testnet"}');
+  }, { sleep: async (ms) => waits.push(ms) });
+  assert.deepEqual(await readClient.getConfig(), { network_id: "testnet" });
+  assert.equal(calls, 2);
+  assert.ok(waits[0] >= 250);
+});
+
+test("overlapping identical read calls are deduplicated", async () => {
+  let calls = 0;
+  let resolveFetch;
+  const gate = new Promise((resolve) => { resolveFetch = resolve; });
+  const readClient = makeReadClient(async () => {
+    calls += 1;
+    await gate;
+    return rpcResponseText('{"network_id":"testnet"}');
+  });
+  const first = readClient.getConfig();
+  const second = readClient.getConfig();
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  resolveFetch();
+  assert.deepEqual(await Promise.all([first, second]), [
+    { network_id: "testnet" },
+    { network_id: "testnet" },
+  ]);
+});
+
+test("mainnet RPC endpoints are rejected and are never used as fallback", async () => {
+  assert.throws(() => new NearRegistryClient({
+    networkId: "testnet",
+    rpcUrl: "https://rpc.mainnet.near.org",
+    contractId: "registry.testnet",
+  }), { kind: "configuration" });
+  assert.throws(() => new NearRegistryClient({
+    networkId: "testnet",
+    rpcUrl: "https://rpc.example.com",
+    contractId: "registry.testnet",
+  }), { kind: "configuration" });
+  assert.throws(() => new NearRegistryClient({
+    networkId: "testnet",
+    rpcUrl: "https://rpc.mainnet.testnet.example",
+    contractId: "registry.testnet",
+  }), { kind: "configuration" });
+});
+
+test("a read finishing after cache invalidation cannot repopulate stale data", async () => {
+  let calls = 0;
+  let resolveFirst;
+  const firstResponse = new Promise((resolve) => { resolveFirst = resolve; });
+  const readClient = makeReadClient(async () => {
+    calls += 1;
+    if (calls === 1) return firstResponse;
+    return rpcResponseText('{"network_id":"fresh"}');
+  });
+
+  const beforeInvalidation = readClient.getConfig();
+  await Promise.resolve();
+  assert.equal(calls, 1);
+  readClient.clearReadCache();
+  assert.deepEqual(await readClient.getConfig(), { network_id: "fresh" });
+
+  resolveFirst(rpcResponseText('{"network_id":"stale"}'));
+  assert.deepEqual(await beforeInvalidation, { network_id: "stale" });
+  assert.deepEqual(await readClient.getConfig(), { network_id: "fresh" });
+  assert.equal(calls, 2, "the late pre-invalidation read must not replace the fresh cached result");
+});
+
+test("missing contract configuration has a distinct read error", () => {
+  const keys = ["NEXT_PUBLIC_NEAR_NETWORK_ID", "NEXT_PUBLIC_NEAR_RPC_URL", "NEXT_PUBLIC_REGISTRY_CONTRACT_ID"];
+  const previous = Object.fromEntries(keys.map((key) => [key, process.env[key]]));
+  try {
+    process.env.NEXT_PUBLIC_NEAR_NETWORK_ID = "testnet";
+    process.env.NEXT_PUBLIC_NEAR_RPC_URL = "https://rpc.testnet.near.org";
+    delete process.env.NEXT_PUBLIC_REGISTRY_CONTRACT_ID;
+    assert.throws(() => NearRegistryClient.fromEnvironment(), (error) =>
+      error instanceof RegistryReadError
+        && error.kind === "configuration"
+        && /NEXT_PUBLIC_REGISTRY_CONTRACT_ID/.test(error.message),
+    );
+  } finally {
+    for (const key of keys) {
+      if (previous[key] === undefined) delete process.env[key];
+      else process.env[key] = previous[key];
+    }
+  }
 });
 
 test("transaction arguments preserve decimal u64 strings through HOT signing", async () => {
@@ -216,6 +406,33 @@ test("transaction failures and wallet rejections are surfaced with useful kinds"
     (error) =>
       error instanceof RegistryTransactionError &&
       error.kind === "wallet_rejected",
+  );
+});
+
+test("an uncertain wallet submission is never retried or duplicated", async () => {
+  let submissions = 0;
+  const wallet = {
+    signAndSendTransaction: async () => {
+      submissions += 1;
+      throw new Error("RPC connection closed before a result arrived");
+    },
+  };
+  await assert.rejects(
+    client.submit(wallet, "alice.testnet", "register_token", {}, 0n),
+    (error) => error instanceof RegistryTransactionError
+      && error.kind === "submission_uncertain"
+      && /Check transaction status before trying again/.test(error.message),
+  );
+  assert.equal(submissions, 1);
+});
+
+test("missing wallet transaction return data requires status verification before retry", async () => {
+  const wallet = { signAndSendTransaction: async () => ({ status: {} }) };
+  await assert.rejects(
+    client.submit(wallet, "alice.testnet", "register_token", {}, 0n),
+    (error) => error instanceof RegistryTransactionError
+      && error.kind === "submission_uncertain"
+      && /Check transaction status before trying again/.test(error.message),
   );
 });
 

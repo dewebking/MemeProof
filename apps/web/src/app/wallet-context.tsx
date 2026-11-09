@@ -13,9 +13,11 @@ import {
 } from "react";
 import {
   getRegistryClient,
+  RegistryTransactionError,
   type RegistryTransactionResult,
   type NearWalletSigner,
 } from "../lib/near/registry";
+import { invalidateRegistryDataCache } from "../lib/near/registry-data";
 
 export type WalletState =
   "restoring" | "disconnected" | "connecting" | "connected" | "disconnecting";
@@ -38,7 +40,7 @@ interface WalletContextValue {
   transactionPending: boolean;
   error: string | null;
   clearError: () => void;
-  connect: (walletId: string) => Promise<void>;
+  connect: (walletId: string) => Promise<boolean>;
   disconnect: () => Promise<void>;
   switchWallet: () => Promise<void>;
   submitRegistryFunction: <T>(
@@ -212,12 +214,12 @@ export function WalletProvider({ children }: { children: ReactNode }) {
 
   const connect = useCallback(async (walletId: string) => {
     const connector = connectorRef.current;
-    if (!connector || !TESTNET_NEAR_WALLETS.has(walletId)) return;
+    if (!connector || !TESTNET_NEAR_WALLETS.has(walletId)) return false;
     if (transactionPendingRef.current) {
       setError(
         "Wait for the registry transaction to finish before switching wallets.",
       );
-      return;
+      return false;
     }
     allowSignInRef.current = true;
     setState("connecting");
@@ -240,6 +242,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setWallet(selectedWallet);
       setAccountId(account.accountId);
       setState("connected");
+      return true;
     } catch (cause) {
       allowSignInRef.current = false;
       await connector.disconnect().catch(() => undefined);
@@ -248,6 +251,7 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setAccountId(null);
       setState("disconnected");
       setError(messageOf(cause, "Wallet connection failed. Please try again."));
+      return false;
     }
   }, []);
 
@@ -318,13 +322,23 @@ export function WalletProvider({ children }: { children: ReactNode }) {
       setTransactionPending(true);
       setError(null);
       try {
-        return await getRegistryClient().submit<T>(
+        const client = getRegistryClient();
+        const result = await client.submit<T>(
           wallet as unknown as NearWalletSigner,
           accountId,
           methodName,
           args,
           attachedDepositYocto,
         );
+        client.clearReadCache();
+        invalidateRegistryDataCache();
+        return result;
+      } catch (cause) {
+        if (cause instanceof RegistryTransactionError && cause.kind === "submission_uncertain") {
+          getRegistryClient().clearReadCache();
+          invalidateRegistryDataCache();
+        }
+        throw cause;
       } finally {
         transactionPendingRef.current = false;
         setTransactionPending(false);

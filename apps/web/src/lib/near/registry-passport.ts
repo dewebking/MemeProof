@@ -90,10 +90,33 @@ async function allPages<T>(
   return records;
 }
 
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  concurrency: number,
+  mapper: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const result = new Array<R>(items.length);
+  let nextIndex = 0;
+  await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, async () => {
+    while (nextIndex < items.length) {
+      const index = nextIndex++;
+      result[index] = await mapper(items[index]);
+    }
+  }));
+  return result;
+}
+
 export function getHistoryEventCommitmentId(event: HistoryEvent): NearInteger | null {
   const created = event.kind.commitment_created;
   if (!created || typeof created !== "object" || !("commitment_id" in created)) return null;
   const id = (created as { commitment_id: unknown }).commitment_id;
+  return typeof id === "number" || typeof id === "string" ? id : null;
+}
+
+function getHistoryEventTokenId(event: HistoryEvent): NearInteger | null {
+  const created = event.kind.commitment_created;
+  if (!created || typeof created !== "object" || !("token_id" in created)) return null;
+  const id = (created as { token_id: unknown }).token_id;
   return typeof id === "number" || typeof id === "string" ? id : null;
 }
 
@@ -107,15 +130,15 @@ export async function findTokenByIdentity(
 
 async function loadCreatedCommitments(
   client: Pick<NearRegistryClient, "getCommitment" | "getHistoryEvents">,
+  tokenId: NearInteger,
 ): Promise<CommitmentWithCurrentVersion[]> {
   const events = await allPages((cursor, limit) => client.getHistoryEvents(cursor, limit));
-  const ids = [...new Set(events.map(getHistoryEventCommitmentId).filter((id): id is NearInteger => id !== null))];
-  const commitments: CommitmentWithCurrentVersion[] = [];
-  for (let start = 0; start < ids.length; start += 8) {
-    const batch = await Promise.all(ids.slice(start, start + 8).map((id) => client.getCommitment(id)));
-    commitments.push(...batch.filter((item): item is CommitmentWithCurrentVersion => item !== null));
-  }
-  return commitments;
+  const ids = [...new Set(events
+    .filter((event) => String(getHistoryEventTokenId(event)) === String(tokenId))
+    .map(getHistoryEventCommitmentId)
+    .filter((id): id is NearInteger => id !== null))];
+  const records = await mapWithConcurrency(ids, 6, (id) => client.getCommitment(id));
+  return records.filter((item): item is CommitmentWithCurrentVersion => item !== null);
 }
 
 export async function getTokenPassportRecords(
@@ -132,64 +155,62 @@ export async function getTokenPassportRecords(
   >,
   tokenId: NearInteger,
 ): Promise<TokenPassportRecords> {
-  const commitments = (await loadCreatedCommitments(client))
-    .filter((item) => String(item.commitment.token_id) === String(tokenId))
+  const commitments = (await loadCreatedCommitments(client, tokenId))
     .sort((a, b) => BigInt(a.commitment.id) < BigInt(b.commitment.id) ? -1 : 1);
 
-  const evidenceByCommitment = await Promise.all(commitments.map(async (commitment) => {
-    const versions: CommitmentVersion[] = [];
-    let versionCursor: number | null = null;
-    do {
-      const page = await client.getCommitmentVersions(
-        commitment.commitment.id,
-        versionCursor,
-        PAGE_SIZE,
-      );
-      versions.push(...page.versions);
-      versionCursor = page.next_cursor;
-    } while (versionCursor !== null);
-    const evidence = await allPages((cursor, limit) =>
-      client.getCommitmentEvidences(commitment.commitment.id, cursor, limit),
-    );
+  const evidenceByCommitment = await mapWithConcurrency(commitments, 6, async (commitment) => {
+    const [versions, evidence] = await Promise.all([
+      (async () => {
+        const items: CommitmentVersion[] = [];
+        let cursor: number | null = null;
+        do {
+          const page = await client.getCommitmentVersions(commitment.commitment.id, cursor, PAGE_SIZE);
+          items.push(...page.versions);
+          cursor = page.next_cursor;
+        } while (cursor !== null);
+        return items;
+      })(),
+      allPages((cursor, limit) => client.getCommitmentEvidences(commitment.commitment.id, cursor, limit)),
+    ]);
     return { commitment, versions, evidence };
-  }));
+  });
 
-  const passportCommitments: PassportCommitment[] = await Promise.all(
-    evidenceByCommitment.map(async ({ commitment, versions, evidence }) => ({
+  const passportCommitments: PassportCommitment[] = await mapWithConcurrency(
+    evidenceByCommitment,
+    6,
+    async ({ commitment, versions, evidence }) => ({
       record: commitment,
       versions,
-      evidence: await Promise.all(evidence.map(async (record) => ({
+      evidence: await mapWithConcurrency(evidence, 6, async (record) => ({
         record,
         reviews: await allPages((cursor, limit) =>
           client.getReviewsByEvidence(record.id, cursor, limit),
         ),
-      }))),
-    })),
+      })),
+    }),
   );
 
-  const disputeRecords = new Map<string, DisputeRecord>();
-  for (const commitment of commitments) {
-    const records = await allPages((cursor, limit) =>
+  const disputeTargets = [
+    ...commitments.map((commitment) => () => allPages((cursor, limit) =>
       client.getDisputesByCommitment(commitment.commitment.id, cursor, limit),
-    );
-    for (const dispute of records) disputeRecords.set(String(dispute.id), dispute);
-  }
-  for (const { evidence } of evidenceByCommitment) {
-    for (const record of evidence) {
-      const records = await allPages((cursor, limit) =>
-        client.getDisputesByEvidence(record.id, cursor, limit),
-      );
-      for (const dispute of records) disputeRecords.set(String(dispute.id), dispute);
-    }
-  }
+    )),
+    ...evidenceByCommitment.flatMap(({ evidence }) => evidence.map((record) => () => allPages((cursor, limit) =>
+      client.getDisputesByEvidence(record.id, cursor, limit),
+    ))),
+  ];
+  const disputePages = await mapWithConcurrency(disputeTargets, 6, (read) => read());
+  const disputeRecords = new Map<string, DisputeRecord>();
+  for (const record of disputePages.flat()) disputeRecords.set(String(record.id), record);
 
-  const disputes = await Promise.all(
-    [...disputeRecords.values()].map(async (record) => ({
+  const disputes = await mapWithConcurrency(
+    [...disputeRecords.values()],
+    6,
+    async (record) => ({
       record,
       resolution: record.status === "resolved"
         ? await client.getDisputeResolution(record.id)
         : null,
-    })),
+    }),
   );
   disputes.sort((a, b) => BigInt(a.record.id) > BigInt(b.record.id) ? -1 : 1);
   return { commitments: passportCommitments, disputes };

@@ -36,6 +36,28 @@ test("discovers new tokens, updates changed source records, and deduplicates by 
   assert.equal(result.rows.find((row) => row.meme_id === 1).source_record.name, "new");
 });
 
+test("records source page and row counts and timestamps success only after the upsert", async () => {
+  const operations = [];
+  let tick = 0;
+  const store = deps({
+    now: () => new Date(Date.parse("2026-01-01T00:00:00.000Z") + tick++ * 1_000),
+    fetchSourceTokens: async () => {
+      operations.push("fetch");
+      return { records: [valid(1), valid(2)], pagesFetched: 2, recordsReceived: 3, uniqueRecords: 2 };
+    },
+    upsertTokens: async (rows) => { operations.push("upsert"); store.calls.upserts.push(...rows); },
+    markSyncSuccessful: async (at) => { operations.push("success"); store.calls.syncSucceeded.push(at); },
+  });
+
+  const summary = await runRefreshJob(store, options);
+  assert.deepEqual(operations, ["fetch", "upsert", "success"]);
+  assert.equal(summary.sourcePagesFetched, 2);
+  assert.equal(summary.sourceRecordsReceived, 3);
+  assert.equal(summary.sourceUniqueRecords, 2);
+  assert.equal(store.calls.syncSucceeded[0], "2026-01-01T00:00:03.000Z");
+  assert.ok(Date.parse(store.calls.syncSucceeded[0]) > Date.parse(summary.startedAt));
+});
+
 test("source API outage preserves existing rows and schedules exponential retry", async () => {
   const store = deps({ fetchSourceTokens: async () => { throw new Error("upstream down"); }, countTokens: async () => 9 });
   const summary = await runRefreshJob(store, options);

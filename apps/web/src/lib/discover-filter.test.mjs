@@ -103,3 +103,14 @@ test("search combines with each launch filter and clearing search restores filte
     [1, 2, 3, 4, 5],
   );
 });
+
+test("search includes provider network and creator fields", () => {
+  const providerRecord = {
+    meme_id: 6,
+    name: "Network Listing",
+    network_id: "near-mainnet",
+    creator: "launch-owner.near",
+  };
+  assert.deepEqual(filterDiscoverTokens([providerRecord], "near-mainnet", "all"), [providerRecord]);
+  assert.deepEqual(filterDiscoverTokens([providerRecord], "launch-owner.near", "all"), [providerRecord]);
+});

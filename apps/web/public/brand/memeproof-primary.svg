@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 360 164" role="img" aria-labelledby="title desc">
+  <title id="title">MemeProof</title>
+  <desc id="desc">The open record symbol above the MemeProof wordmark.</desc>
+  <g fill="none" stroke="#173B34" stroke-linecap="round" stroke-width="4.4">
+    <path d="M171 17c-11 0-16 5.6-16 16.5v17c0 10.9 5 16.5 16 16.5M189 17c11 0 16 5.6 16 16.5v17c0 10.9-5 16.5-16 16.5"/>
+  </g>
+  <path d="M168 42h8l4-7 4 14 4-7h8" fill="none" stroke="#55B98D" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.4"/>
+  <text x="180" y="130" fill="#173B34" font-family="Aptos, Segoe UI, Arial, sans-serif" font-size="35" font-weight="700" letter-spacing="-1.9" text-anchor="middle"><tspan>Meme</tspan><tspan font-family="Georgia, serif" font-weight="600" letter-spacing="-1.6">Proof</tspan></text>
+</svg>

@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 390 76" role="img" aria-labelledby="title">
+  <title id="title">MemeProof logo for dark backgrounds</title>
+  <g transform="translate(4 7) scale(1.28)" fill="none" stroke="#F7F5EE" stroke-linecap="round" stroke-width="3.5">
+    <path d="M18.5 7.5C11.2 7.5 8 11.2 8 18.3v11.4c0 7.1 3.2 10.8 10.5 10.8M29.5 7.5C36.8 7.5 40 11.2 40 18.3v11.4c0 7.1-3.2 10.8-10.5 10.8"/>
+  </g>
+  <path d="M23.5 37.7h6.7l3.8-6.4 4 12.8 4-6.4h6.6" fill="none" stroke="#75D5AE" stroke-linecap="round" stroke-linejoin="round" stroke-width="4.2"/>
+  <text x="75" y="51" fill="#F7F5EE" font-family="Aptos, Segoe UI, Arial, sans-serif" font-size="35" font-weight="700" letter-spacing="-1.8"><tspan>Meme</tspan><tspan fill="#75D5AE" font-family="Georgia, serif" font-weight="600" letter-spacing="-1.4">Proof</tspan></text>
+</svg>

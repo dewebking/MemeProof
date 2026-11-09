@@ -51,7 +51,7 @@ function tokenIdFromInput(value: string): bigint {
   return tokenId;
 }
 
-function positiveU64(value: string, label: string): string {
+export function positiveU64(value: string, label: string): string {
   if (!/^\d+$/.test(value.trim())) throw new Error(`Enter a ${label}.`);
   const parsed = BigInt(value.trim());
   if (parsed < BigInt(1) || parsed > U64_MAX)
@@ -59,7 +59,7 @@ function positiveU64(value: string, label: string): string {
   return parsed.toString();
 }
 
-function positiveU32(value: string, label: string): number {
+export function positiveU32(value: string, label: string): number {
   if (!/^\d+$/.test(value.trim())) throw new Error(`Enter a ${label}.`);
   const parsed = BigInt(value.trim());
   if (parsed < BigInt(1) || parsed > BigInt(2) ** BigInt(32) - BigInt(1)) {
@@ -68,14 +68,14 @@ function positiveU32(value: string, label: string): number {
   return Number(parsed);
 }
 
-function storageAllowance(value: string): bigint {
+export function storageAllowance(value: string): bigint {
   const deposit = nearToYocto(value);
   if (deposit <= BigInt(0))
     throw new Error("Storage allowance must be greater than zero.");
   return deposit;
 }
 
-function validPublicReference(value: string): boolean {
+export function validPublicReference(value: string): boolean {
   if (
     inputBytes(value) === 0 ||
     inputBytes(value) > 2048 ||
@@ -167,7 +167,7 @@ function validCidV1Sha256(cid: string): boolean {
   );
 }
 
-function validateSha256(value: string): boolean {
+export function validateSha256(value: string): boolean {
   return /^[\da-fA-F]{64}$/.test(value);
 }
 
@@ -409,6 +409,10 @@ export function CreateCommitmentForm() {
     useNearWallet();
   const [step, setStep] = useState(1);
   const [tokenId, setTokenId] = useState("");
+  const [registeredToken, setRegisteredToken] = useState<TokenRecord | null>(null);
+  const [tokenLookup, setTokenLookup] = useState<
+    "idle" | "loading" | "found" | "missing" | "error"
+  >("idle");
   const [title, setTitle] = useState("");
   const [description, setDescription] = useState("");
   const [criteria, setCriteria] = useState("");
@@ -422,6 +426,52 @@ export function CreateCommitmentForm() {
   const canSubmit =
     Boolean(accountId) && !transactionPending && state === "connected";
   const minimumDeadline = localDateTimeMinimum();
+
+  useEffect(() => {
+    const candidate = tokenId.trim();
+    if (
+      !/^\d+$/.test(candidate) ||
+      candidate.length > 20 ||
+      BigInt(candidate) < BigInt(1) ||
+      BigInt(candidate) > U64_MAX
+    ) return;
+    let current = true;
+    const timeout = window.setTimeout(() => {
+      getRegistryClient()
+        .getToken(candidate)
+        .then((record) => {
+          if (!current) return;
+          setRegisteredToken(record);
+          setTokenLookup(record ? "found" : "missing");
+        })
+        .catch(() => {
+          if (!current) return;
+          setRegisteredToken(null);
+          setTokenLookup("error");
+        });
+    }, 350);
+    return () => {
+      current = false;
+      window.clearTimeout(timeout);
+    };
+  }, [tokenId]);
+
+  function updateTokenId(value: string) {
+    setTokenId(value);
+    const candidate = value.trim();
+    if (
+      /^\d+$/.test(candidate) &&
+      candidate.length <= 20 &&
+      BigInt(candidate) >= BigInt(1) &&
+      BigInt(candidate) <= U64_MAX
+    ) {
+      setRegisteredToken(null);
+      setTokenLookup("loading");
+    } else {
+      setRegisteredToken(null);
+      setTokenLookup("idle");
+    }
+  }
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -468,13 +518,14 @@ export function CreateCommitmentForm() {
     <>
       <div className="form-layout">
         <section className="form-main panel">
-          <div className="stepper">
+          <div className="stepper" role="group" aria-label="Commitment creation progress">
             {[1, 2, 3].map((number) => (
               <div
                 key={number}
-                className={`stepper-item ${step >= number ? "stepper-current" : ""}`}
+                className={`stepper-item ${step === number ? "stepper-current" : step > number ? "stepper-complete" : "stepper-upcoming"}`}
+                aria-current={step === number ? "step" : undefined}
               >
-                <span>{step > number ? "✓" : `0${number}`}</span>
+                <span aria-hidden="true">{step > number ? String.fromCharCode(0x2713) : `0${number}`}</span>
                 <b>
                   {["Commitment", "Criteria & deadline", "Review"][number - 1]}
                 </b>
@@ -498,9 +549,21 @@ export function CreateCommitmentForm() {
                     pattern="[0-9]+"
                     placeholder="Token ID returned after registration"
                     value={tokenId}
-                    onChange={(event) => setTokenId(event.target.value)}
+                    onChange={(event) => updateTokenId(event.target.value)}
                   />
                 </label>
+                {tokenLookup !== "idle" && (
+                  <div
+                    className={`token-lookup token-lookup-${tokenLookup}`}
+                    role="status"
+                    aria-live="polite"
+                  >
+                    {tokenLookup === "loading" && <><span className="token-lookup-pulse" />Checking the NEAR testnet registry…</>}
+                    {tokenLookup === "found" && registeredToken && <><span className="token-lookup-check">✓</span><span><b>Registered on NEAR testnet</b><code>{registeredToken.identity.token_contract_address}</code></span></>}
+                    {tokenLookup === "missing" && "No registered token matches this ID. Check the ID or register the token first."}
+                    {tokenLookup === "error" && "The registry could not be reached. The ID will be checked again by the contract when you submit."}
+                  </div>
+                )}
                 <p className="field-caption">
                   <Link href="/register-token" className="text-link">
                     Register a token first ↗
@@ -640,14 +703,14 @@ export function CreateCommitmentForm() {
             </div>
           </form>
         </section>
-        <aside className="side-note panel">
-          <div className="note-icon">✳</div>
-          <h3>Stored on the registry</h3>
-          <p>
-            The contract validates the token ID, immutable criteria, deadline,
-            and attached storage deposit. Failed or rejected transactions do not
-            create local commitments.
-          </p>
+        <aside className="commitment-aside panel" aria-label="Commitment publishing details">
+          <div className="commitment-aside-top"><span className="commitment-aside-mark" aria-hidden="true">✳</span><span>YOUR PUBLIC RECORD</span></div>
+          <h3>{step === 1 ? "Start with a promise." : step === 2 ? "Make success observable." : "Publish it with confidence."}</h3>
+          <p>{step === 1 ? "Tie this commitment to a token already registered on the NEAR testnet registry." : step === 2 ? "Clear criteria and a future deadline give reviewers a shared reference point." : "Your terms are immutable after publishing. The connected wallet signs the transaction."}</p>
+          <div className="commitment-aside-flow" aria-label="Promise, evidence, review">
+            <span className={step >= 1 ? "is-active" : ""}><i>01</i><b>Promise</b></span><span className={step >= 2 ? "is-active" : ""}><i>02</i><b>Evidence</b></span><span className={step >= 3 ? "is-active" : ""}><i>03</i><b>Review</b></span>
+          </div>
+          <div className="commitment-aside-foot"><i /> Live registry · NEAR testnet</div>
         </aside>
       </div>
       {createdCommitment && (
