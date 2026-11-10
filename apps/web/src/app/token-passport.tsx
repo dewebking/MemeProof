@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import Link from "next/link";
 import { Badge, Button, Card } from "./ui";
 import TokenImage from "./token-image";
@@ -37,14 +37,34 @@ function SafeLink({ label, raw }: { label: string; raw: unknown }) {
   return <a href={safeHref} target="_blank" rel="noopener noreferrer">{label} ↗</a>;
 }
 
-function CopyField({ label, value }: { label: string; value?: string }) {
+type PassportIconName = "passport" | "id" | "status" | "owner" | "copy" | "external";
+
+function PassportIcon({ name }: { name: PassportIconName }) {
+  const shapes: Record<PassportIconName, ReactNode> = {
+    passport: <><rect x="4" y="3" width="16" height="18" rx="2"/><path d="M8 8h8M8 12h5"/><circle cx="15.5" cy="16.5" r="2.5"/></>,
+    id: <><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M7 10h4M7 14h2M14 10h3M14 14h3"/></>,
+    status: <><circle cx="12" cy="12" r="8.5"/><path d="m8 12 2.5 2.5L16 9"/></>,
+    owner: <><circle cx="12" cy="8" r="3.2"/><path d="M5.5 20a6.5 6.5 0 0 1 13 0"/></>,
+    copy: <><rect x="8" y="8" width="12" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v11a2 2 0 0 0 2 2h2"/></>,
+    external: <><path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v5a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h5"/></>,
+  };
+  return <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.65" strokeLinecap="round" strokeLinejoin="round">{shapes[name]}</svg>;
+}
+
+function CopyField({ label, value, className }: { label: string; value?: string; className?: string }) {
   const [copied, setCopied] = useState(false);
   if (!value) return null;
   const copyValue = value;
   async function copy() {
     try { await navigator.clipboard.writeText(copyValue); setCopied(true); window.setTimeout(() => setCopied(false), 1600); } catch { setCopied(false); }
   }
-  return <div className="passport-copy"><span><small>{label}</small><code title={value}>{value}</code></span><Button variant="quiet" size="small" onClick={copy}>{copied ? "Copied" : "Copy"}</Button></div>;
+  return <div className={`passport-copy${className ? ` ${className}` : ""}`}><span><small>{label}</small><code title={value}>{value}</code></span><Button variant="quiet" size="small" onClick={copy}><PassportIcon name="copy"/><span>{copied ? "Copied" : "Copy"}</span></Button></div>;
+}
+
+function nearExplorerUrl(account: string): string | undefined {
+  if (!/^[a-z0-9][a-z0-9._-]{0,62}[a-z0-9]$/.test(account)) return;
+  const host = account.toLowerCase().endsWith(".testnet") ? "https://testnet.nearblocks.io" : "https://nearblocks.io";
+  return `${host}/address/${encodeURIComponent(account)}`;
 }
 
 function Metric({ label, value, exact, denomination }: { label: string; value?: string; exact?: string; denomination?: string }) {
@@ -93,14 +113,47 @@ export default function TokenPassport({ id }: { id: string }) {
   const feeValue = first(token, "total_deposit_fee", "total_deposit_fees");
   const withdrawalFee = first(token, "total_withdrawal_fee", "total_withdrawal_fees");
   const deposit = first(token, "total_deposit", "total_deposits");
+  const ownerExplorer = owner ? nearExplorerUrl(owner) : undefined;
 
   return <div className="token-passport">
     <div className="passport-back"><Link href="/discover" className="button button-quiet">← Back to Discover</Link><span className="eyebrow">MEME.COOKING TOKEN / {display(first(token, "meme_id", "id")) ?? id}</span></div>
-    <Card className="passport-hero">
-      <TokenImage className="passport-avatar" value={token} name={name} width={96} height={96} />
-      <div className="passport-identity"><span className="eyebrow">LAUNCH OWNER: MEME.COOKING</span><h1>{name}{symbol && <span>{symbol.startsWith("$") ? symbol : `$${symbol}`}</span>}</h1><p>Meme ID {display(first(token, "meme_id", "id")) ?? id}</p><Badge variant={launchState === "Finalized" ? "success" : "neutral"}>Launch: {launchState}</Badge></div>
-      <div className="passport-identifiers"><CopyField label="Launch owner" value={owner} /><CopyField label="Token contract" value={contract} /></div>
-    </Card>
+    <section className="token-passport-identity" aria-label="Token identity">
+      <Card className="token-passport-banner">
+        <div className="token-passport-banner-identity">
+          <TokenImage className="token-passport-logo" value={token} name={name} width={88} height={88} />
+          <div className="token-passport-banner-copy">
+            <h1>{name}</h1>
+            {symbol && <span className="token-passport-ticker">{symbol.startsWith("$") ? symbol : `$${symbol}`}</span>}
+            <span className="token-passport-descriptor">MEME.COOKING TOKEN PASSPORT</span>
+          </div>
+        </div>
+        <div className="token-passport-seal"><PassportIcon name="passport"/><span>MEMEPROOF<br/>TOKEN PASSPORT</span></div>
+      </Card>
+
+      <div className="token-passport-detail-grid">
+        <Card className="token-passport-meta-card" aria-label="Token launch metadata">
+          <div className="token-passport-meta-item">
+            <span className="token-passport-meta-icon"><PassportIcon name="id"/></span>
+            <span className="token-passport-meta-copy"><small>Meme ID</small><b>{display(first(token, "meme_id", "id")) ?? id}</b></span>
+          </div>
+          <div className="token-passport-meta-item">
+            <span className="token-passport-meta-icon"><PassportIcon name="status"/></span>
+            <span className="token-passport-meta-copy"><small>Launch status</small><Badge variant={launchState === "Finalized" ? "success" : "neutral"}>{launchState}</Badge></span>
+          </div>
+        </Card>
+
+        <Card className="token-passport-owner-card" aria-label="Launch owner">
+          <span className="token-passport-owner-avatar"><PassportIcon name="owner"/></span>
+          <div className="token-passport-owner-copy"><small>Launch owner</small><b>Meme.Cooking</b>{owner ? <CopyField className="token-passport-owner-account" label="Owner account" value={owner} /> : <span className="token-passport-owner-unavailable">Owner account unavailable</span>}</div>
+          {ownerExplorer && <a className="token-passport-external" href={ownerExplorer} target="_blank" rel="noopener noreferrer" aria-label={`Open ${owner} in NEAR Explorer`} title="Open account in NEAR Explorer"><PassportIcon name="external"/></a>}
+        </Card>
+      </div>
+
+      {contract && <Card className="token-passport-contract-card">
+        <span className="token-passport-contract-icon"><PassportIcon name="copy"/></span>
+        <CopyField className="token-passport-contract-field" label="Token contract address" value={contract} />
+      </Card>}
+    </section>
 
     <section className="passport-section"><div className="passport-section-heading"><div><span className="eyebrow">PROJECT</span><h2>Overview</h2></div></div><Card className="passport-overview">
       <div className="passport-overview-content"><p>{display(first(token, "description")) ?? "No project description is available."}</p><div className="passport-links">{links.filter(([, raw]) => Boolean(raw)).map(([label, raw]) => <SafeLink key={label} label={label} raw={raw} />)}</div></div>
