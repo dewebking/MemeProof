@@ -162,6 +162,48 @@ export interface CreateCommitmentArgs {
   deadline_at_ns: string;
 }
 
+/** Keep browser input rules aligned with validate_bounded_text in the contract. */
+export function validateCommitmentCriteria(value: string): string {
+  const criteria = value.trim();
+  if (!criteria) {
+    throw new Error("Add success criteria before continuing.");
+  }
+  if (new TextEncoder().encode(criteria).length > 8 * 1024) {
+    throw new Error("Criteria exceed 8 KiB. Shorten the criteria before continuing.");
+  }
+  if (/\p{Cc}/u.test(criteria)) {
+    throw new Error(
+      "Criteria cannot contain line breaks, tabs, or other control characters. Replace them with spaces before continuing.",
+    );
+  }
+  return criteria;
+}
+
+export async function getTokenMetadataName(
+  metadataUri: string | null,
+  fetcher: typeof fetch = globalThis.fetch,
+  signal?: AbortSignal,
+): Promise<string | null> {
+  if (!metadataUri) return null;
+  let url: URL;
+  try {
+    url = new URL(metadataUri);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== "https:" && url.protocol !== "http:") return null;
+  try {
+    const response = await fetcher(url, { signal, headers: { accept: "application/json" } });
+    if (!response.ok) return null;
+    const metadata: unknown = await response.json();
+    if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return null;
+    const name = (metadata as { name?: unknown }).name;
+    return typeof name === "string" && name.trim() ? name.trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 export interface RegistryClientConfig {
   networkId: "testnet";
   rpcUrl: string;

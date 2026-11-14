@@ -3365,6 +3365,24 @@ mod tests {
     fn description_and_criteria_limits_and_control_characters_are_enforced() {
         assert_eq!(
             validate_bounded_text(
+                "Publish a public update with three progress items.",
+                MAX_COMMITMENT_CRITERIA_BYTES
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            validate_bounded_text("   ", MAX_COMMITMENT_CRITERIA_BYTES),
+            Err(InputValidationError::EmptyText)
+        );
+        assert_eq!(
+            validate_bounded_text(
+                "First condition\nSecond condition",
+                MAX_COMMITMENT_CRITERIA_BYTES
+            ),
+            Err(InputValidationError::ContainsControlCharacter)
+        );
+        assert_eq!(
+            validate_bounded_text(
                 &"d".repeat(MAX_COMMITMENT_DESCRIPTION_BYTES),
                 MAX_COMMITMENT_DESCRIPTION_BYTES
             ),

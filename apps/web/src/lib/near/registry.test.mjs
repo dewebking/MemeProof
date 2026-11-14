@@ -17,7 +17,9 @@ const {
   NearRegistryClient,
   RegistryReadError,
   RegistryTransactionError,
+  getTokenMetadataName,
   serializeTransactionArgs,
+  validateCommitmentCriteria,
 } = await import(
   `data:text/javascript;base64,${Buffer.from(compiled).toString("base64")}`
 );
@@ -41,6 +43,41 @@ const client = new NearRegistryClient({
   networkId: "testnet",
   rpcUrl: "https://rpc.testnet.near.org",
   contractId: "registry.testnet",
+});
+
+test("commitment criteria validation mirrors the contract and preserves its single-line payload", () => {
+  const criteria = "Publish a public development update. Include at least three specific progress updates. Provide supporting links or evidence. Make the report publicly accessible.";
+  assert.equal(validateCommitmentCriteria(`  ${criteria}  `), criteria);
+  assert.throws(() => validateCommitmentCriteria("  \t  "), /Add success criteria/);
+  assert.throws(() => validateCommitmentCriteria("First condition\nSecond condition"), /line breaks, tabs/);
+  assert.throws(() => validateCommitmentCriteria("x".repeat(8193)), /exceed 8 KiB/);
+});
+
+test("token name is read from optional HTTP token metadata without inventing a fallback", async () => {
+  assert.equal(await getTokenMetadataName(null), null);
+  assert.equal(await getTokenMetadataName("javascript:alert(1)"), null);
+  assert.equal(await getTokenMetadataName("https://token.example/metadata.json", async (url, options) => {
+    assert.equal(url.href, "https://token.example/metadata.json");
+    assert.equal(options.headers.accept, "application/json");
+    return { ok: true, json: async () => ({ name: "Example Token" }) };
+  }), "Example Token");
+  assert.equal(await getTokenMetadataName("https://token.example/metadata.json", async () => ({
+    ok: true,
+    json: async () => ({ symbol: "EX" }),
+  })), null);
+  assert.equal(await getTokenMetadataName("https://token.example/metadata.json", async () => {
+    throw new Error("Metadata server is unavailable");
+  }), null);
+  assert.equal(await getTokenMetadataName("https://token.example/metadata.json", async () => ({
+    ok: false,
+    json: async () => ({}),
+  })), null);
+  assert.equal(await getTokenMetadataName("https://token.example/metadata.json", async () => ({
+    ok: true,
+    json: async () => {
+      throw new SyntaxError("Invalid JSON");
+    },
+  })), null);
 });
 
 function makeReadClient(fetchImpl, options = {}) {
@@ -271,7 +308,7 @@ test("transaction arguments preserve decimal u64 strings through HOT signing", a
     ...args,
     title: "title",
     description: "description",
-    criteria: "criteria",
+    criteria: "Publish a public development update. Include at least three specific progress updates. Provide supporting links or evidence. Make the report publicly accessible.",
   };
   const wallet = {
     signAndSendTransaction: async (request) => {

@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState, type FormEvent, type ReactNode } from "react";
 import {
   explainTransactionError,
+  getTokenMetadataName,
   getRegistryClient,
   nearToYocto,
   type CommitmentWithCurrentVersion,
@@ -15,6 +16,7 @@ import {
   type ReviewOutcome,
   type DisputeDisposition,
   type TokenRecord,
+  validateCommitmentCriteria,
 } from "../lib/near/registry";
 import { useNearWallet } from "./wallet-context";
 
@@ -410,6 +412,10 @@ export function CreateCommitmentForm() {
   const [step, setStep] = useState(1);
   const [tokenId, setTokenId] = useState("");
   const [registeredToken, setRegisteredToken] = useState<TokenRecord | null>(null);
+  const [registeredTokenName, setRegisteredTokenName] = useState<{
+    tokenId: string;
+    name: string | null;
+  } | null>(null);
   const [tokenLookup, setTokenLookup] = useState<
     "idle" | "loading" | "found" | "missing" | "error"
   >("idle");
@@ -456,6 +462,20 @@ export function CreateCommitmentForm() {
     };
   }, [tokenId]);
 
+  useEffect(() => {
+    const metadataUri = registeredToken?.metadata_uri;
+    if (!metadataUri) return;
+    const controller = new AbortController();
+    getTokenMetadataName(metadataUri, globalThis.fetch, controller.signal)
+      .then((name) => {
+        if (!controller.signal.aborted && registeredToken) {
+          setRegisteredTokenName({ tokenId: String(registeredToken.id), name });
+        }
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [registeredToken]);
+
   function updateTokenId(value: string) {
     setTokenId(value);
     const candidate = value.trim();
@@ -487,11 +507,10 @@ export function CreateCommitmentForm() {
         throw new Error("Title exceeds 256 bytes.");
       if (inputBytes(description.trim()) > 4096)
         throw new Error("Description exceeds 4 KB.");
-      if (inputBytes(criteria.trim()) > 8192)
-        throw new Error("Criteria exceed 8 KB.");
       if (!title.trim() || !description.trim() || !criteria.trim()) {
         throw new Error("Complete all commitment fields before submitting.");
       }
+      const validatedCriteria = validateCommitmentCriteria(criteria);
       const deadlineAtNs = dateTimeToNanoseconds(deadline);
       const deposit = validateStorageDeposit(storageDeposit);
       const result = await submitRegistryFunction<CommitmentWithCurrentVersion>(
@@ -500,7 +519,7 @@ export function CreateCommitmentForm() {
           token_id: parsedTokenId.toString(),
           title: title.trim(),
           description: description.trim(),
-          criteria: criteria.trim(),
+          criteria: validatedCriteria,
           deadline_at_ns: deadlineAtNs.toString(),
         },
         deposit,
@@ -640,41 +659,48 @@ export function CreateCommitmentForm() {
               </>
             )}
             {step === 3 && (
-              <>
-                <h2>Review your commitment</h2>
-                <p className="form-hint">
-                  Submitting asks your connected wallet to sign a NEAR testnet
-                  transaction.
-                </p>
-                <dl className="commitment-review">
-                  <div>
-                    <dt>Token ID</dt>
-                    <dd>{tokenId || "—"}</dd>
+              <div className="commitment-confirmation">
+                <div className="commitment-confirmation-heading">
+                  <span className="eyebrow">FINAL CHECK · NEAR TESTNET</span>
+                  <h2>Review before you publish</h2>
+                  <p>Check the public terms carefully. Your wallet will ask you to sign the registry transaction.</p>
+                </div>
+                {/\bsample\b/i.test(description) && (
+                  <div className="commitment-sample-notice" role="note">
+                    <span aria-hidden="true">i</span>
+                    <span><b>Sample commitment</b>This description identifies the commitment as a sample.</span>
                   </div>
-                  <div>
-                    <dt>Title</dt>
-                    <dd>{title || "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>Description</dt>
-                    <dd>{description || "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>Criteria</dt>
-                    <dd>{criteria || "—"}</dd>
-                  </div>
-                  <div>
-                    <dt>Deadline</dt>
-                    <dd>
-                      {deadline ? new Date(deadline).toLocaleString() : "—"}
-                    </dd>
-                  </div>
-                  <div>
-                    <dt>Transaction signer</dt>
-                    <dd>{accountId ?? "Connect a wallet"}</dd>
-                  </div>
-                </dl>
-              </>
+                )}
+                <section className="commitment-preview-card commitment-preview-overview" aria-labelledby="preview-overview-title">
+                  <div className="commitment-preview-section-title"><span>01</span><h3 id="preview-overview-title">Commitment overview</h3></div>
+                  <h4>{title || "Untitled commitment"}</h4>
+                  <p>{description || "No description provided."}</p>
+                </section>
+                <section className="commitment-preview-card commitment-preview-criteria" aria-labelledby="preview-criteria-title">
+                  <div className="commitment-preview-section-title"><span>02</span><h3 id="preview-criteria-title">Success criteria</h3></div>
+                  <p>{criteria || "No criteria provided."}</p>
+                </section>
+                <section className="commitment-preview-deadline" aria-label="Commitment deadline">
+                  <span aria-hidden="true">◷</span>
+                  <div><small>DEADLINE · YOUR LOCAL TIME</small><b>{deadline ? new Date(deadline).toLocaleString(undefined, { dateStyle: "full", timeStyle: "short" }) : "No deadline selected"}</b></div>
+                </section>
+                <div className="commitment-preview-details">
+                  <section className="commitment-preview-card" aria-labelledby="preview-token-title">
+                    <div className="commitment-preview-section-title"><span>03</span><h3 id="preview-token-title">Token information</h3></div>
+                    {registeredToken ? <>
+                      <small>Token name</small><b className="commitment-token-name">{registeredTokenName?.tokenId === String(registeredToken.id) ? registeredTokenName.name ?? "Unavailable in token metadata" : registeredToken.metadata_uri ? "Loading token metadata…" : "Unavailable in token metadata"}</b>
+                      <small>Registered token ID</small><b className="commitment-token-id">#{String(registeredToken.id)}</b>
+                      <small>Token contract address</small><code>{registeredToken.identity.token_contract_address}</code>
+                    </> : <p>Registry ID #{tokenId || "—"}. Token details could not be loaded.</p>}
+                  </section>
+                  <section className="commitment-preview-card" aria-labelledby="preview-transaction-title">
+                    <div className="commitment-preview-section-title"><span>04</span><h3 id="preview-transaction-title">Transaction</h3></div>
+                    <small>Signing account</small>
+                    <code>{accountId ?? "Connect a wallet"}</code>
+                    <p>The commitment is recorded only after the transaction succeeds on NEAR testnet.</p>
+                  </section>
+                </div>
+              </div>
             )}
             {error && <FormNotice error>{error}</FormNotice>}
             {transactionPending && <TransactionProgress />}
@@ -686,7 +712,7 @@ export function CreateCommitmentForm() {
                   disabled={transactionPending}
                   onClick={() => setStep((current) => current - 1)}
                 >
-                  ← Back
+                  {step === 3 ? "Edit commitment" : "← Back"}
                 </button>
               )}
               <button
@@ -698,7 +724,7 @@ export function CreateCommitmentForm() {
                   ? "Continue →"
                   : transactionPending
                     ? "Waiting for wallet…"
-                    : "Create commitment on NEAR"}
+                  : "Create commitment on NEAR"}
               </button>
             </div>
           </form>

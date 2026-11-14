@@ -1464,3 +1464,32 @@ body{background:var(--brand-canvas);color:var(--brand-ink);font-family:var(--fon
   .discover-token-card:hover,.registry-commitment:hover{transform:none}
   .skeleton-token-identity b,.skeleton-token-identity small,.skeleton-token-identity em,.skeleton-token-description i,.skeleton-token-meta i,.skeleton-token-footer i{animation:none}
 }
+
+/* Final commitment confirmation */
+.commitment-confirmation{display:grid;gap:14px;margin-top:22px}
+.commitment-confirmation-heading .eyebrow{color:#4d795b;font-size:9px}
+.commitment-confirmation-heading h2{margin:9px 0 6px;color:#26394b;font-size:24px;letter-spacing:-.7px}
+.commitment-confirmation-heading>p{max-width:600px;margin:0;color:#758173;font-size:12px;line-height:1.7}
+.commitment-preview-card{min-width:0;padding:18px 19px;border:1px solid #e4e9df;border-radius:10px;background:#fffefa}
+.commitment-preview-section-title{display:flex;align-items:center;gap:9px;margin-bottom:13px}
+.commitment-preview-section-title>span{display:grid;place-items:center;flex:none;width:24px;height:24px;border:1px solid #dce7dc;border-radius:7px;background:#f3f7f0;color:#55745b;font-size:9px;font-weight:750}
+.commitment-preview-section-title h3{margin:0;color:#354a3a;font-size:12px;font-weight:700;letter-spacing:-.1px}
+.commitment-preview-overview h4{margin:0 0 8px;color:#263a2c;font-family:var(--font-display,inherit);font-size:23px;font-weight:500;line-height:1.3;overflow-wrap:anywhere}
+.commitment-preview-card>p{margin:0;color:#68766b;font-size:12px;line-height:1.75;overflow-wrap:anywhere;white-space:pre-wrap}
+.commitment-preview-criteria{border-left:3px solid #75a181;background:#f8faf5}
+.commitment-preview-deadline{display:flex;align-items:center;gap:13px;padding:16px 18px;border:1px solid #dbe7dc;border-radius:10px;background:#edf4ec;color:#365a3e}
+.commitment-preview-deadline>span{display:grid;place-items:center;flex:none;width:38px;height:38px;border-radius:10px;background:#fffefa;color:#4c8159;font-size:22px}
+.commitment-preview-deadline>div{display:grid;gap:5px;min-width:0}
+.commitment-preview-deadline small{color:#6c846d;font-size:8px;font-weight:800;letter-spacing:.9px}
+.commitment-preview-deadline b{color:#304b35;font-size:14px;line-height:1.45;overflow-wrap:anywhere}
+.commitment-preview-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
+.commitment-preview-card>small{display:block;margin:9px 0 4px;color:#8a9586;font-size:8px;font-weight:750;letter-spacing:.65px;text-transform:uppercase}
+.commitment-preview-card>code{display:block;color:#4e6252;font-size:10px;line-height:1.6;overflow-wrap:anywhere;word-break:break-word}
+.commitment-preview-card>.commitment-token-name{font-size:10px}
+.commitment-token-id{display:block;color:#304a37;font-size:18px}
+.commitment-preview-card>code+ p{margin-top:10px}
+.commitment-sample-notice{display:flex;align-items:flex-start;gap:10px;padding:11px 13px;border:1px solid #eadfbe;border-radius:8px;background:#fbf7e9;color:#746542}
+.commitment-sample-notice>span:first-child{display:grid;place-items:center;flex:none;width:19px;height:19px;border-radius:50%;background:#efe4c6;color:#806b37;font-size:11px;font-weight:750}
+.commitment-sample-notice>span:last-child{display:grid;gap:3px;font-size:10px;line-height:1.5}
+.commitment-sample-notice b{color:#65552f;font-size:10px}
+@media(max-width:600px){.commitment-confirmation{gap:10px;margin-top:18px}.commitment-confirmation-heading h2{font-size:21px}.commitment-preview-card{padding:15px 14px}.commitment-preview-overview h4{font-size:20px}.commitment-preview-card>p{font-size:11px}.commitment-preview-details{grid-template-columns:minmax(0,1fr);gap:9px}.commitment-preview-deadline{align-items:flex-start;padding:14px}.commitment-preview-deadline b{font-size:12px}}
