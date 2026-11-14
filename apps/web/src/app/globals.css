@@ -1486,6 +1486,7 @@ body{background:var(--brand-canvas);color:var(--brand-ink);font-family:var(--fon
 .commitment-preview-card>small{display:block;margin:9px 0 4px;color:#8a9586;font-size:8px;font-weight:750;letter-spacing:.65px;text-transform:uppercase}
 .commitment-preview-card>code{display:block;color:#4e6252;font-size:10px;line-height:1.6;overflow-wrap:anywhere;word-break:break-word}
 .commitment-preview-card>.commitment-token-name{font-size:10px}
+.commitment-preview-card>.commitment-token-source{margin:8px 0 0;color:#899589;font-size:9px;line-height:1.5}
 .commitment-token-id{display:block;color:#304a37;font-size:18px}
 .commitment-preview-card>code+ p{margin-top:10px}
 .commitment-sample-notice{display:flex;align-items:flex-start;gap:10px;padding:11px 13px;border:1px solid #eadfbe;border-radius:8px;background:#fbf7e9;color:#746542}
@@ -1493,3 +1494,16 @@ body{background:var(--brand-canvas);color:var(--brand-ink);font-family:var(--fon
 .commitment-sample-notice>span:last-child{display:grid;gap:3px;font-size:10px;line-height:1.5}
 .commitment-sample-notice b{color:#65552f;font-size:10px}
 @media(max-width:600px){.commitment-confirmation{gap:10px;margin-top:18px}.commitment-confirmation-heading h2{font-size:21px}.commitment-preview-card{padding:15px 14px}.commitment-preview-overview h4{font-size:20px}.commitment-preview-card>p{font-size:11px}.commitment-preview-details{grid-template-columns:minmax(0,1fr);gap:9px}.commitment-preview-deadline{align-items:flex-start;padding:14px}.commitment-preview-deadline b{font-size:12px}}
+
+/* Registry passport identity hierarchy */
+.registry-passport-token-heading{display:flex;align-items:center;gap:16px;min-width:0;margin-top:16px}
+.registry-passport-token-logo{display:grid;place-items:center;flex:none;width:64px;height:64px;border:1px solid #ffffff29;border-radius:16px;background:#ffffff12;object-fit:cover;color:#e7f2e7;font-family:var(--font-display);font-size:25px;font-weight:500}
+.registry-passport .passport-identity .registry-passport-token-heading h1{max-width:660px;margin:0;color:#fffdf6;font-family:var(--font-display);font-size:clamp(31px,4vw,46px);font-weight:500;letter-spacing:-1.2px;line-height:1.06;overflow-wrap:anywhere;word-break:normal}
+.registry-passport-token-symbol{display:inline-block;margin-top:8px;color:#b9e7c7;font-size:15px;font-weight:700;letter-spacing:.2px}
+.registry-passport-metadata-source{margin:9px 0 0 80px;color:#91ad98;font-size:9px;line-height:1.5}
+.registry-passport .passport-identity-network{margin-top:17px}
+.registry-empty-accountability .registry-state{gap:8px;min-height:150px;padding:22px 16px}
+.registry-empty-mark{display:grid;place-items:center;width:29px;height:29px;border:1px solid #e1e9dd;border-radius:50%;background:#f4f7f0;color:#6c9470;font-size:19px;line-height:1}
+.registry-empty-accountability .registry-state>b{color:#35523d;font-family:var(--font-display);font-size:18px;font-weight:500}
+.registry-empty-accountability .registry-state>span:last-child{max-width:440px;color:#78857a;font-size:10px;line-height:1.65}
+@media(max-width:600px){.registry-passport-token-heading{gap:12px;margin-top:13px}.registry-passport-token-logo{width:54px;height:54px;border-radius:13px}.registry-passport .passport-identity .registry-passport-token-heading h1{font-size:clamp(27px,8vw,36px);letter-spacing:-.7px}.registry-passport-token-symbol{margin-top:6px;font-size:13px}.registry-passport-metadata-source{margin-left:66px}.registry-empty-accountability .registry-state{min-height:130px;padding:18px 10px}}

@@ -11,6 +11,7 @@ import type {
   TokenIdentity,
   TokenRecord,
 } from "./registry";
+import type { DiscoverTokenRecord } from "../discover-client";
 
 const PAGE_SIZE = 50;
 
@@ -57,6 +58,20 @@ export function sameTokenIdentity(
     canonicalLeft.network_id === canonicalRight.network_id &&
     canonicalLeft.token_contract_address === canonicalRight.token_contract_address,
   );
+}
+
+export function findDiscoverTokenByContract(
+  listings: readonly DiscoverTokenRecord[],
+  tokenContractAddress: string,
+): DiscoverTokenRecord | null {
+  const identity = canonicalTokenIdentity("testnet", tokenContractAddress);
+  if (!identity) return null;
+  return listings.find((listing) => {
+    const contract = listing.token_id;
+    if (typeof contract !== "string") return false;
+    const listingIdentity = canonicalTokenIdentity("testnet", contract);
+    return Boolean(listingIdentity && sameTokenIdentity(identity, listingIdentity));
+  }) ?? null;
 }
 
 export type TokenRegistrationStatus = "registered" | "unregistered" | "identity_unavailable";
@@ -138,7 +153,9 @@ async function loadCreatedCommitments(
     .map(getHistoryEventCommitmentId)
     .filter((id): id is NearInteger => id !== null))];
   const records = await mapWithConcurrency(ids, 6, (id) => client.getCommitment(id));
-  return records.filter((item): item is CommitmentWithCurrentVersion => item !== null);
+  return records.filter((item): item is CommitmentWithCurrentVersion =>
+    item !== null && String(item.commitment.token_id) === String(tokenId),
+  );
 }
 
 export async function getTokenPassportRecords(

@@ -18,6 +18,8 @@ import {
   type TokenRecord,
   validateCommitmentCriteria,
 } from "../lib/near/registry";
+import { fetchDiscoverListing } from "../lib/discover-client";
+import { findDiscoverTokenByContract } from "../lib/near/registry-passport";
 import { useNearWallet } from "./wallet-context";
 
 const DEFAULT_STORAGE_DEPOSIT = "1";
@@ -416,6 +418,10 @@ export function CreateCommitmentForm() {
     tokenId: string;
     name: string | null;
   } | null>(null);
+  const [registeredTokenListing, setRegisteredTokenListing] = useState<{
+    tokenId: string;
+    record: Record<string, unknown> | null;
+  } | null>(null);
   const [tokenLookup, setTokenLookup] = useState<
     "idle" | "loading" | "found" | "missing" | "error"
   >("idle");
@@ -476,8 +482,28 @@ export function CreateCommitmentForm() {
     return () => controller.abort();
   }, [registeredToken]);
 
+  useEffect(() => {
+    if (!registeredToken) return;
+    let active = true;
+    const controller = new AbortController();
+    void fetchDiscoverListing(globalThis.fetch, controller.signal)
+      .then(({ data }) => {
+        if (active) {
+          setRegisteredTokenListing({
+            tokenId: String(registeredToken.id),
+            record: findDiscoverTokenByContract(data, registeredToken.identity.token_contract_address),
+          });
+        }
+      })
+      .catch(() => {
+        if (active) setRegisteredTokenListing({ tokenId: String(registeredToken.id), record: null });
+      });
+    return () => { active = false; controller.abort(); };
+  }, [registeredToken]);
+
   function updateTokenId(value: string) {
     setTokenId(value);
+    setRegisteredTokenListing(null);
     const candidate = value.trim();
     if (
       /^\d+$/.test(candidate) &&
@@ -532,6 +558,17 @@ export function CreateCommitmentForm() {
       setError(explainTransactionError(cause));
     }
   }
+
+  const currentTokenListing = registeredToken && registeredTokenListing?.tokenId === String(registeredToken.id)
+    ? registeredTokenListing.record
+    : null;
+  const listedTokenName = typeof currentTokenListing?.name === "string" && currentTokenListing.name.trim()
+    ? currentTokenListing.name.trim()
+    : null;
+  const listedTokenSymbol = typeof currentTokenListing?.symbol === "string" && currentTokenListing.symbol.trim()
+    ? currentTokenListing.symbol.trim()
+    : null;
+  const tokenListingResolved = Boolean(registeredToken && registeredTokenListing?.tokenId === String(registeredToken.id));
 
   return (
     <>
@@ -688,7 +725,9 @@ export function CreateCommitmentForm() {
                   <section className="commitment-preview-card" aria-labelledby="preview-token-title">
                     <div className="commitment-preview-section-title"><span>03</span><h3 id="preview-token-title">Token information</h3></div>
                     {registeredToken ? <>
-                      <small>Token name</small><b className="commitment-token-name">{registeredTokenName?.tokenId === String(registeredToken.id) ? registeredTokenName.name ?? "Unavailable in token metadata" : registeredToken.metadata_uri ? "Loading token metadata…" : "Unavailable in token metadata"}</b>
+                      <small>Token name</small><b className="commitment-token-name">{listedTokenName ?? (registeredTokenName?.tokenId === String(registeredToken.id) ? registeredTokenName.name : null) ?? (tokenListingResolved ? "No public token name found" : "Loading public token details…")}</b>
+                      {listedTokenSymbol && <><small>Token ticker</small><b className="commitment-token-name">${listedTokenSymbol}</b></>}
+                      <p className="commitment-token-source">Name and ticker come from public metadata; the registry stores this token’s contract identity.</p>
                       <small>Registered token ID</small><b className="commitment-token-id">#{String(registeredToken.id)}</b>
                       <small>Token contract address</small><code>{registeredToken.identity.token_contract_address}</code>
                     </> : <p>Registry ID #{tokenId || "—"}. Token details could not be loaded.</p>}
