@@ -128,13 +128,6 @@ export function getHistoryEventCommitmentId(event: HistoryEvent): NearInteger | 
   return typeof id === "number" || typeof id === "string" ? id : null;
 }
 
-function getHistoryEventTokenId(event: HistoryEvent): NearInteger | null {
-  const created = event.kind.commitment_created;
-  if (!created || typeof created !== "object" || !("token_id" in created)) return null;
-  const id = (created as { token_id: unknown }).token_id;
-  return typeof id === "number" || typeof id === "string" ? id : null;
-}
-
 export async function findTokenByIdentity(
   client: Pick<NearRegistryClient, "getTokens">,
   identity: TokenIdentity,
@@ -148,14 +141,23 @@ async function loadCreatedCommitments(
   tokenId: NearInteger,
 ): Promise<CommitmentWithCurrentVersion[]> {
   const events = await allPages((cursor, limit) => client.getHistoryEvents(cursor, limit));
+  // CommitmentCreated stores only commitment_id in HistoryEventKind. The
+  // token_id is present in the NEP-297 log, but not in get_history_events.
+  // Hydrate each event's commitment, then select by its authoritative token_id.
   const ids = [...new Set(events
-    .filter((event) => String(getHistoryEventTokenId(event)) === String(tokenId))
-    .map(getHistoryEventCommitmentId)
-    .filter((id): id is NearInteger => id !== null))];
+    .filter((event) => "commitment_created" in event.kind)
+    .map((event) => {
+      const id = getHistoryEventCommitmentId(event);
+      if (id === null) throw new Error(`Registry history event #${String(event.id)} has no valid commitment ID.`);
+      return id;
+    }))];
   const records = await mapWithConcurrency(ids, 6, (id) => client.getCommitment(id));
-  return records.filter((item): item is CommitmentWithCurrentVersion =>
-    item !== null && String(item.commitment.token_id) === String(tokenId),
-  );
+  return records.map((item, index) => {
+    if (item === null) {
+      throw new Error(`Registry history references missing commitment #${String(ids[index])}.`);
+    }
+    return item;
+  }).filter((item) => String(item.commitment.token_id) === String(tokenId));
 }
 
 export async function getTokenPassportRecords(

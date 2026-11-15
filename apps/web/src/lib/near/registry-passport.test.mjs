@@ -36,10 +36,11 @@ test("registry status distinguishes absent identity, confirmed absence, and an e
 
 test("discovery metadata matches a registry token only by its full contract address", () => {
   const listings = [
-    { meme_id: 84, name: "Example Token", symbol: "EX", token_id: "example-token.near" },
+    { meme_id: 84, name: "Example Token", symbol: "EX", token_id: "example-token.near", image_url: "https://images.example.test/example.png" },
     { meme_id: 3, name: "Another Token", symbol: "EX", token_id: "another-token.near" },
   ];
   assert.equal(findDiscoverTokenByContract(listings, "EXAMPLE-TOKEN.NEAR"), listings[0]);
+  assert.equal(findDiscoverTokenByContract(listings, "EXAMPLE-TOKEN.NEAR").image_url, "https://images.example.test/example.png");
   assert.equal(findDiscoverTokenByContract(listings, "missing.near"), null);
   assert.equal(findDiscoverTokenByContract(listings, "invalid address"), null);
 });
@@ -52,11 +53,11 @@ test("token passport hydrates only commitments named for the selected token and 
   });
   const result = await getTokenPassportRecords({
     getHistoryEvents: async () => ({ records: [
-      { id: 1, actor: "alice.testnet", occurred_at_ns: 10, kind: { commitment_created: { commitment_id: 7, token_id: 12 } } },
-      { id: 2, actor: "alice.testnet", occurred_at_ns: 11, kind: { commitment_created: { commitment_id: 8, token_id: 99 } } },
-      { id: 3, actor: "alice.testnet", occurred_at_ns: 12, kind: { commitment_created: { commitment_id: 9, token_id: 12 } } },
+      { id: 1, actor: "alice.testnet", occurred_at_ns: 10, kind: { commitment_created: { commitment_id: 7 } } },
+      { id: 2, actor: "alice.testnet", occurred_at_ns: 11, kind: { commitment_created: { commitment_id: 8 } } },
+      { id: 3, actor: "alice.testnet", occurred_at_ns: 12, kind: { commitment_created: { commitment_id: 9 } } },
     ], next_cursor: null }),
-    getCommitment: async (id) => { hydrated.push(String(id)); return record(id, id === 9 ? 99 : 12); },
+    getCommitment: async (id) => { hydrated.push(String(id)); return record(id, id === 7 ? 12 : 99); },
     getCommitmentVersions: async () => ({ versions: [
       { version: 1, title: "Earlier", description: "Old", criteria: "Old criteria", deadline_at_ns: "18", created_at_ns: "12" },
       { version: 2, title: "Promise 7", description: "Description", criteria: "Criteria", deadline_at_ns: "20", created_at_ns: "15" },
@@ -68,10 +69,28 @@ test("token passport hydrates only commitments named for the selected token and 
     getDisputeResolution: async () => ({ dispute_id: 40, resolver: "dave.testnet", disposition: "inconclusive", rationale: "Insufficient record", resolved_at_ns: "23" }),
   }, 12);
 
-  assert.deepEqual(hydrated, ["7", "9"]);
+  assert.deepEqual(hydrated, ["7", "8", "9"]);
   assert.equal(result.commitments.length, 1);
   assert.equal(result.commitments[0].versions.length, 2);
   assert.equal(result.commitments[0].evidence[0].reviews[0].id, 30);
   assert.equal(result.disputes.length, 1);
   assert.equal(result.disputes[0].resolution.disposition, "inconclusive");
+});
+
+test("passport history preserves RPC failures and rejects malformed commitment events", async () => {
+  await assert.rejects(
+    getTokenPassportRecords({
+      getHistoryEvents: async () => { throw new Error("RPC unavailable"); },
+    }, 12),
+    /RPC unavailable/,
+  );
+
+  await assert.rejects(
+    getTokenPassportRecords({
+      getHistoryEvents: async () => ({ records: [
+        { id: 4, actor: "alice.testnet", occurred_at_ns: 10, kind: { commitment_created: {} } },
+      ], next_cursor: null }),
+    }, 12),
+    /history event #4 has no valid commitment ID/,
+  );
 });

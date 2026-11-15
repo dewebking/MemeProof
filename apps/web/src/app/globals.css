@@ -1507,3 +1507,132 @@ body{background:var(--brand-canvas);color:var(--brand-ink);font-family:var(--fon
 .registry-empty-accountability .registry-state>b{color:#35523d;font-family:var(--font-display);font-size:18px;font-weight:500}
 .registry-empty-accountability .registry-state>span:last-child{max-width:440px;color:#78857a;font-size:10px;line-height:1.65}
 @media(max-width:600px){.registry-passport-token-heading{gap:12px;margin-top:13px}.registry-passport-token-logo{width:54px;height:54px;border-radius:13px}.registry-passport .passport-identity .registry-passport-token-heading h1{font-size:clamp(27px,8vw,36px);letter-spacing:-.7px}.registry-passport-token-symbol{margin-top:6px;font-size:13px}.registry-passport-metadata-source{margin-left:66px}.registry-empty-accountability .registry-state{min-height:130px;padding:18px 10px}}
+
+/* Registry dossier: editorial records with clear identity and provenance. */
+.registry-dossier{--dossier-ink:#202a24;--dossier-muted:#68746b;--dossier-line:#dce2d8;--dossier-paper:#fbfaf5;width:min(100%,1040px);min-width:0;margin:0 auto;padding:5px 0 48px;color:var(--dossier-ink)}
+.registry-dossier-state{width:min(100%,1040px);min-height:40vh;margin:0 auto;padding:36px 0}
+.registry-dossier-state .registry-state{min-height:180px;padding:28px;border:1px solid #dfe4db;background:#fbfaf5;color:#667269}
+.dossier-breadcrumb{display:flex;align-items:center;gap:10px;min-height:38px;margin:0 0 24px;color:#7b857c;font-size:11px}
+.dossier-breadcrumb a{color:#45664c;text-decoration:underline;text-decoration-color:#b5c6b2;text-underline-offset:3px}
+.dossier-breadcrumb a:hover{color:#263c2c}
+.dossier-breadcrumb [aria-current]{color:#38473b}
+.dossier-identity{position:relative;display:grid;grid-template-columns:minmax(0,1fr);align-items:center;gap:34px;min-width:0;padding:28px 0 30px;border-top:1px solid #cfd7cd;border-bottom:1px solid #cfd7cd}
+.dossier-identity-overline{position:absolute;inset:0 0 auto;display:flex;align-items:center;justify-content:space-between;gap:12px;transform:translateY(-50%);pointer-events:none}
+.dossier-identity-overline>span{padding-right:11px;background:var(--bg);color:#738176;font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase}
+.dossier-identity-status{display:flex;align-items:center;gap:9px}
+.dossier-identity-status>*{pointer-events:auto}
+.dossier-network-tag{display:inline-flex;align-items:center;min-height:22px;padding:0 7px;border:1px solid transparent;border-radius:20px;background:transparent;color:#879186;font-size:9px;font-weight:550}
+.dossier-network-tag.is-placeholder{border-color:#eddfbc;background:#fbf6e9;color:#8b6a2c}
+.dossier-identity-main{display:grid;grid-template-columns:80px minmax(0,1fr);align-items:center;gap:19px;min-width:0}
+.dossier-token-logo{display:grid;place-items:center;flex:none;width:80px;height:80px;border:1px solid #dce3d8;border-radius:14px;background:#f0f3eb;object-fit:cover;color:#45654c;font-family:var(--font-display);font-size:25px;font-weight:500}
+.dossier-identity-copy{min-width:0}
+.dossier-identity-copy h1{max-width:100%;margin:4px 0 7px;color:#202a24;font-family:var(--font-display,Georgia,serif);font-size:clamp(30px,3.8vw,44px);font-weight:500;letter-spacing:-1.25px;line-height:1.1;overflow-wrap:break-word;word-break:normal}
+.dossier-kicker{margin:0;color:#718174;font-size:9px;font-weight:750;letter-spacing:.13em;text-transform:uppercase}
+.dossier-identity-copy>.dossier-kicker{display:flex;gap:7px;align-items:center}
+.dossier-identity-copy>.dossier-kicker span{color:#a2ad9e}
+.dossier-identity-tags{display:flex;align-items:center;flex-wrap:wrap;gap:8px}
+.dossier-token-ticker,.dossier-registry-id{display:inline-flex;align-items:center;gap:5px;min-height:26px;padding:0 9px;border:1px solid #dfe5dc;border-radius:4px;background:#fffefa;color:#4e5c50;font-size:11px;font-weight:650}
+.dossier-token-ticker{border-color:#cddccc;background:#eff5ed;color:#426649}
+.dossier-registry-id code{color:#283c2c;font-size:11px}
+.dossier-metadata-source{display:flex;flex-wrap:wrap;gap:6px;margin:10px 0 0;color:#778278;font-size:10px;line-height:1.5}
+.dossier-metadata-source span{color:#929b91}
+.dossier-placeholder-note{grid-column:1/-1;margin:0;padding:10px 12px;border-left:2px solid #c89a40;background:#fbf6e9;color:#795f2e;font-size:11px;line-height:1.6}
+.dossier-registry-id{min-height:26px;padding:0 9px;background:transparent;color:#718174;font-size:10px;font-weight:550;letter-spacing:0;text-transform:none}
+.dossier-registry-id code{color:#4e5c50;font-size:10px;font-weight:650;letter-spacing:0}
+.dossier-registration{margin-top:24px}
+.dossier-section-heading{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;padding-bottom:12px;border-bottom:1px solid var(--dossier-line)}
+.dossier-section-heading>div{display:flex;align-items:baseline;gap:12px;min-width:0}
+.dossier-section-index{color:#79917b;font-family:var(--font-display,Georgia,serif);font-size:14px;font-style:italic}
+.dossier-section-heading h2{margin:0;color:#29352c;font-family:var(--font-display,Georgia,serif);font-size:23px;font-weight:500;letter-spacing:-.4px;line-height:1.2}
+.dossier-section-note{color:#929b91;font-size:9px;text-align:right}
+.dossier-registration-grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));margin:0;border-bottom:1px solid var(--dossier-line)}
+.dossier-registration-grid>div{display:grid;align-content:start;gap:6px;min-width:0;padding:14px 14px 14px 0;border-bottom:1px solid #e6e9e2}
+.dossier-registration-grid>div:nth-child(2),.dossier-registration-grid>div:nth-child(3),.dossier-registration-grid>div:nth-child(5){padding-left:14px;border-left:1px solid #e5e9e2}
+.dossier-registration-grid>div:first-child{grid-column:span 2}
+.dossier-registration-grid>div:nth-last-child(-n+2){border-bottom:0}
+.dossier-registration-grid dt,.dossier-commitment-facts dt,.dossier-evidence-facts dt,.dossier-dispute-facts dt{color:#879186;font-size:9px;font-weight:650;letter-spacing:.04em}
+.dossier-registration-grid dd{display:flex;align-items:center;gap:8px;min-width:0;margin:0;color:#455349;font-size:11px;line-height:1.55;overflow-wrap:anywhere}
+.dossier-registration-grid code,.dossier-commitment-facts code,.dossier-evidence-facts code,.dossier-dispute-facts code{color:#47574b;font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:10px;overflow-wrap:anywhere;word-break:break-word}
+.dossier-registration-address dd code{min-width:0;flex:1}
+.registry-dossier .passport-copy-action{flex:none;min-width:57px;min-height:40px;padding:0 10px;border:1px solid #d5dfd3;border-radius:5px;background:#fffefa;color:#45664c;font-size:10px;font-weight:650}
+.registry-dossier .passport-copy-action:hover{border-color:#9db59e;background:#f1f5ed}
+.dossier-disclaimer{margin:0;padding:11px 0;color:#79847a;font-size:10px;line-height:1.65}
+.dossier-history{display:grid;gap:39px;margin-top:33px}
+.dossier-section{min-width:0}
+.dossier-section-heading{margin-bottom:0}
+.dossier-commitment-list,.dossier-dispute-list{display:grid}
+.dossier-commitment,.dossier-dispute{min-width:0;padding:24px 0 27px;border-bottom:1px solid #dce2d8}
+.dossier-record-overline{display:flex;align-items:center;flex-wrap:wrap;gap:8px 18px;color:#788579;font-size:9px}
+.dossier-record-id{color:#748176}
+.dossier-record-id code{color:#344c38}
+.dossier-record-version{margin-left:auto;color:#828d83}
+.dossier-record-version b{color:#405f47;font-size:11px}
+.dossier-record-overline .badge{margin:0}
+.dossier-commitment h3,.dossier-dispute h3{max-width:790px;margin:11px 0 8px;color:#26342a;font-family:var(--font-display,Georgia,serif);font-size:clamp(22px,3vw,30px);font-weight:500;letter-spacing:-.45px;line-height:1.25;overflow-wrap:anywhere}
+.dossier-description{max-width:800px;margin:0;color:#66736a;font-size:12px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.dossier-criteria{max-width:850px;margin-top:19px;padding:15px 18px;border-left:2px solid #77967c;background:#f2f5ee}
+.dossier-criteria h4{margin:0 0 7px;color:#526b54;font-size:10px;font-weight:700}
+.dossier-criteria p{margin:0;color:#47564a;font-size:11px;line-height:1.8;white-space:pre-wrap;overflow-wrap:anywhere}
+.dossier-commitment-facts,.dossier-dispute-facts{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px 20px;margin:19px 0 0}
+.dossier-commitment-facts>div,.dossier-dispute-facts>div{display:grid;gap:6px;min-width:0}
+.dossier-commitment-facts dd,.dossier-dispute-facts dd{margin:0;color:#4d5a50;font-size:10px;line-height:1.55;overflow-wrap:anywhere}
+.dossier-version-history{margin-top:18px;border-top:1px solid #e3e8df;border-bottom:1px solid #e3e8df}
+.dossier-version-history summary{display:flex;align-items:center;justify-content:space-between;gap:12px;min-height:45px;color:#44664b;font-size:11px;font-weight:650;cursor:pointer;list-style:none}
+.dossier-version-history summary::-webkit-details-marker{display:none}
+.dossier-version-history summary:after{content:"+";margin-left:auto;color:#557659;font-size:17px;font-weight:400}
+.dossier-version-history[open] summary:after{content:"−"}
+.dossier-version-history summary span:last-child{color:#859187;font-size:9px;font-weight:500}
+.dossier-version-list{display:grid;gap:0;margin:0;padding:0 0 10px;list-style:none}
+.dossier-version-list li{display:grid;grid-template-columns:44px minmax(0,1fr);gap:12px;padding:15px 0;border-top:1px solid #e8ebe5}
+.dossier-version-number{display:grid;place-items:center;align-self:start;width:35px;height:29px;border:1px solid #dce5d8;background:#f3f6f0;color:#567357;font-family:ui-monospace,monospace;font-size:10px}
+.dossier-version-copy{min-width:0}
+.dossier-version-title{display:flex;align-items:center;flex-wrap:wrap;gap:8px;color:#374a3a;font-size:11px}
+.dossier-version-title>span{padding:3px 6px;background:#e7f0e6;color:#55775b;font-size:8px}
+.dossier-version-copy>small{display:block;margin-top:6px;color:#879186;font-size:9px;line-height:1.5}
+.dossier-version-copy>p{margin:9px 0 0;color:#657168;font-size:10px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+.dossier-version-criteria{display:grid;grid-template-columns:58px minmax(0,1fr);gap:8px;padding:9px;background:#f6f7f2}
+.dossier-version-criteria b{color:#738175;font-size:9px}
+.dossier-evidence-section{margin-top:25px;padding-top:16px;border-top:1px solid #e1e6de}
+.dossier-related-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:11px}
+.dossier-related-heading h4{margin:0;color:#384a3a;font-size:11px;font-weight:700}
+.dossier-related-heading>span{color:#879187;font-size:9px}
+.dossier-evidence-list{display:grid;gap:10px}
+.dossier-evidence{min-width:0;padding:14px 15px;border:1px solid #e0e5dd;background:#fbfaf6}
+.dossier-evidence-heading{display:flex;align-items:center;justify-content:space-between;gap:12px}
+.dossier-evidence-heading>div{display:grid;gap:4px;min-width:0}
+.dossier-evidence-heading>div>span{color:#405343;font-size:10px;font-weight:650}
+.dossier-evidence-heading small{color:#879187;font-size:9px}
+.dossier-evidence-heading .badge{flex:none;margin:0}
+.dossier-evidence-facts{display:grid;grid-template-columns:1fr 1fr 1.4fr;gap:10px 16px;margin:13px 0 0}
+.dossier-evidence-facts>div{display:grid;gap:5px;min-width:0}
+.dossier-evidence-facts dt{font-size:8px}
+.dossier-evidence-facts dd{min-width:0;margin:0;color:#526056;font-size:9px}
+.dossier-evidence-facts code{display:block;line-height:1.5}
+.dossier-review-list{display:grid;gap:8px;margin-top:14px;padding-top:12px;border-top:1px solid #e4e8e0}
+.dossier-review{padding:11px 12px;background:#f3f5ef}
+.dossier-review-heading{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.dossier-review-heading>div{display:flex;align-items:center;gap:8px;min-width:0}
+.dossier-review-heading .badge{flex:none;margin:0}
+.dossier-review-heading>div>span{color:#536257;font-size:9px}
+.dossier-review-heading small{color:#879187;font-size:8px;text-align:right;overflow-wrap:anywhere}
+.dossier-review>p{margin:8px 0 0;color:#616e63;font-size:10px;line-height:1.65;white-space:pre-wrap;overflow-wrap:anywhere}
+.dossier-nested-empty,.dossier-integrity-note{margin:10px 0 0;color:#828c82;font-size:9px;line-height:1.65}
+.dossier-integrity-note{max-width:880px;margin-top:18px;padding-top:10px;border-top:1px solid #e8ebe5}
+.dossier-dispute .dossier-criteria{border-left-color:#c38a63;background:#f7f1e9}
+.dossier-dispute .dossier-criteria h4{color:#8b684c}
+.dossier-dispute .dossier-criteria p{color:#63564b}
+.dossier-resolution{margin-top:16px;padding:14px 16px;border-left:2px solid #64896c;background:#eff5ed}
+.dossier-resolution>div{display:flex;flex-wrap:wrap;gap:8px;color:#57705a;font-size:9px}
+.dossier-resolution>div b{color:#34563b;font-size:11px}
+.dossier-resolution>p{margin:8px 0;color:#536556;font-size:10px;line-height:1.65;white-space:pre-wrap}
+.dossier-resolution>small{color:#849084;font-size:9px;overflow-wrap:anywhere}
+.dossier-empty{display:grid;grid-template-columns:36px minmax(0,1fr);align-items:start;gap:7px 13px;padding:23px 0 25px;border-bottom:1px solid #dce2d8}
+.dossier-empty-mark{grid-row:1/4;display:grid;place-items:center;width:31px;height:31px;border:1px solid #dce4d9;color:#6b896e;font-size:15px}
+.dossier-empty-label{color:#79877a;font-size:8px;font-weight:700;letter-spacing:.11em;text-transform:uppercase}
+.dossier-empty h3{margin:0;color:#344437;font-family:var(--font-display,Georgia,serif);font-size:21px;font-weight:500;letter-spacing:-.2px}
+.dossier-empty p{max-width:650px;margin:0;color:#79847a;font-size:11px;line-height:1.7}
+@media(max-width:760px){.registry-dossier{padding-top:0}.dossier-identity{grid-template-columns:minmax(0,1fr);gap:17px;padding:24px 0}.dossier-identity-status{display:flex;align-items:center;flex-wrap:wrap;gap:8px 10px}.dossier-identity-status p{flex:1 1 100%;max-width:500px}.dossier-identity-status small{flex:1 1 100%}.dossier-registration-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dossier-registration-grid>div:first-child{grid-column:1/-1}.dossier-registration-grid>div:nth-child(n){padding-left:0;border-left:0}.dossier-registration-grid>div:nth-child(2n+3){padding-left:14px;border-left:1px solid #e5e9e2}.dossier-registration-grid>div:nth-last-child(-n+2){border-bottom:0}.dossier-commitment-facts{grid-template-columns:repeat(2,minmax(0,1fr))}.dossier-evidence-facts{grid-template-columns:1fr 1fr}.dossier-evidence-facts>div:last-child{grid-column:1/-1}}
+@media(max-width:480px){.registry-dossier{padding-bottom:30px}.dossier-breadcrumb{gap:7px;margin-bottom:19px;font-size:10px}.dossier-return-link{display:none}.dossier-identity{padding:21px 0}.dossier-identity-overline>span{font-size:8px}.dossier-identity-main{grid-template-columns:56px minmax(0,1fr);gap:12px}.dossier-token-logo{width:56px;height:56px;border-radius:11px;font-size:19px}.dossier-identity-copy h1{margin:4px 0 6px;font-size:clamp(26px,7vw,30px);letter-spacing:-.65px;line-height:1.12;overflow-wrap:break-word;word-break:normal}.dossier-kicker{font-size:8px;letter-spacing:.1em}.dossier-identity-tags{gap:6px}.dossier-token-ticker,.dossier-registry-id{min-height:24px;padding:0 7px;font-size:9px}.dossier-registry-id code{font-size:9px}.dossier-metadata-source{font-size:9px}.dossier-identity-status p{font-size:10px}.dossier-section-heading{align-items:flex-end;gap:9px;padding-bottom:10px}.dossier-section-heading>div{gap:8px}.dossier-section-heading h2{font-size:21px}.dossier-section-note{max-width:105px;font-size:9px}.dossier-registration{margin-top:24px}.dossier-registration-grid>div{gap:6px;padding:13px 8px 13px 0}.dossier-registration-grid>div:nth-child(2n){padding-left:10px}.dossier-registration-grid dt,.dossier-commitment-facts dt,.dossier-evidence-facts dt,.dossier-dispute-facts dt{font-size:8px}.dossier-registration-grid dd{font-size:10px}.dossier-registration-grid code{font-size:9px}.dossier-registration-address dd{align-items:flex-start;flex-wrap:wrap}.dossier-registration-address dd code{flex-basis:100%;line-height:1.55}.registry-dossier .passport-copy-action{min-height:38px}.dossier-disclaimer{font-size:9px}.dossier-history{gap:30px;margin-top:25px}.dossier-commitment,.dossier-dispute{padding:19px 0 21px}.dossier-record-overline{gap:7px 11px;font-size:8px}.dossier-record-version{margin-left:0}.dossier-commitment h3,.dossier-dispute h3{margin:10px 0 7px;font-size:23px}.dossier-description{font-size:11px;line-height:1.7}.dossier-criteria{margin-top:15px;padding:12px 13px}.dossier-criteria p{font-size:10px;line-height:1.7}.dossier-commitment-facts,.dossier-dispute-facts{gap:12px 9px;margin-top:15px}.dossier-commitment-facts dd,.dossier-dispute-facts dd{font-size:9px}.dossier-version-list li{grid-template-columns:34px minmax(0,1fr);gap:8px}.dossier-version-number{width:30px}.dossier-version-copy>p{font-size:9px}.dossier-evidence-section{margin-top:19px;padding-top:13px}.dossier-related-heading h4{font-size:10px}.dossier-evidence{padding:11px 10px}.dossier-evidence-heading{align-items:flex-start}.dossier-evidence-heading>div>span{font-size:9px}.dossier-evidence-heading .badge{font-size:8px}.dossier-evidence-facts{gap:10px}.dossier-evidence-facts code{font-size:8px}.dossier-review{padding:9px}.dossier-review-heading{align-items:flex-start;flex-direction:column;gap:6px}.dossier-review-heading small{text-align:left}.dossier-empty{grid-template-columns:29px minmax(0,1fr);gap:6px 10px;padding:19px 0}.dossier-empty-mark{width:27px;height:27px}.dossier-empty h3{font-size:19px}.dossier-empty p{font-size:10px}}
+.app-frame,.app-main,.page-content{min-width:0}
+@media(max-width:600px){.topbar{width:100%;min-width:0;gap:6px;padding-right:10px;padding-left:10px}.topbar-start{flex:1 1 0;min-width:0;gap:7px}.breadcrumb{min-width:0;flex:1 1 0}.breadcrumb b{max-width:calc(100vw - 174px);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.topbar-right{flex:0 0 auto;min-width:0;gap:0}.wallet-control{flex:0 0 auto;max-width:none}.wallet-connect-trigger{min-width:0;gap:5px;padding-right:7px;padding-left:7px}.wallet-connect-icon{width:14px;height:14px}.wallet-connect-label{white-space:nowrap;font-size:9px}.wallet-error{position:fixed;top:68px;right:8px;width:min(320px,calc(100vw - 16px))}}
+@media(max-width:480px){.registry-dossier .dossier-registration-grid dt,.registry-dossier .dossier-commitment-facts dt,.registry-dossier .dossier-evidence-facts dt,.registry-dossier .dossier-dispute-facts dt{font-size:9px}.registry-dossier .dossier-registration-grid dd{font-size:11px}.registry-dossier .dossier-registration-grid code,.registry-dossier .dossier-commitment-facts dd,.registry-dossier .dossier-evidence-facts dd,.registry-dossier .dossier-dispute-facts dd{font-size:10px}.registry-dossier .dossier-evidence-facts code{font-size:9px}}

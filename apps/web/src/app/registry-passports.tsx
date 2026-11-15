@@ -87,7 +87,7 @@ export function RegistryIdentityStatus({ tokenContractAddress }: { tokenContract
 
 function formatNsDate(value: number | string): string {
   try {
-    return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" })
+    return new Intl.DateTimeFormat("en-GB", { dateStyle: "medium", timeStyle: "short" })
       .format(new Date(Number(BigInt(value) / BigInt(1_000_000))));
   } catch {
     return "Date unavailable";
@@ -139,6 +139,7 @@ export function RegistryPassportDetail({ tokenRecordId }: { tokenRecordId: strin
     source: string;
     stale: boolean;
   } | null>(null);
+
   useEffect(() => {
     let active = true;
     void Promise.resolve().then(async () => {
@@ -148,12 +149,17 @@ export function RegistryPassportDetail({ tokenRecordId }: { tokenRecordId: strin
       if (!token) return { token: null };
       const records = await getTokenPassportRecords(client, token.id);
       return { token, records };
-    }).then((value) => { if (active) setResult({ key, value }); })
-      .catch((cause: unknown) => { if (active) setResult({ key, error: registryError(cause) }); });
+    }).then((value) => {
+      if (active) setResult({ key, value });
+    }).catch((cause: unknown) => {
+      if (active) setResult({ key, error: registryError(cause) });
+    });
     return () => { active = false; };
   }, [key, tokenRecordId]);
+
   const current = result?.key === key ? result : null;
   const currentToken = current?.value?.token ?? null;
+
   useEffect(() => {
     if (!currentToken) return;
     let active = true;
@@ -170,25 +176,366 @@ export function RegistryPassportDetail({ tokenRecordId }: { tokenRecordId: strin
         }
       })
       .catch(() => {
-        if (active) setListingResult({ tokenId: String(currentToken.id), record: null, source: "unavailable", stale: true });
+        if (active) setListingResult({
+          tokenId: String(currentToken.id),
+          record: null,
+          source: "unavailable",
+          stale: true,
+        });
       });
     return () => { active = false; controller.abort(); };
   }, [currentToken]);
-  if (current?.error) return <section className="page-content passport-detail-state"><ErrorState error={current.error} onRetry={retryRead} /></section>;
-  if (!current?.value) return <section className="page-content passport-detail-state"><LoadingState /></section>;
-  if (!current.value.token) return <section className="page-content passport-detail-state"><Card className="passport-state"><Badge variant="warning">Registration not found</Badge><h1>No token record #{tokenRecordId}</h1><p>This token ID is not registered in the configured MemeProof testnet registry.</p><Link className="button button-secondary" href="/passport">Browse registered tokens</Link></Card></section>;
-  const placeholder = isPlaceholderToken(current.value.token);
-  const associatedListing = listingResult?.tokenId === String(current.value.token.id) ? listingResult.record : null;
-  const tokenName = listingText(associatedListing, "name");
-  const tokenSymbol = listingText(associatedListing, "symbol");
-  return <div className="token-passport registry-passport"><div className="passport-back"><Link href="/passport" className="button button-quiet">← All token passports</Link><span className="eyebrow">MEMEPROOF PUBLIC RECORD / NEAR TESTNET</span></div><Card className={`passport-hero registry-passport-hero ${placeholder ? "is-test-record" : ""}`}><div className="passport-identity"><span className="eyebrow">MEMEPROOF REGISTRY <i /> ID #{String(current.value.token.id)}</span><div className="registry-passport-token-heading"><TokenImage className="registry-passport-token-logo" value={associatedListing} name={tokenName ?? "Token"} width={64} height={64} /><div><h1>{tokenName ?? "Token identity"}</h1>{tokenSymbol && <span className="registry-passport-token-symbol">${tokenSymbol}</span>}</div></div>{associatedListing && <p className="registry-passport-metadata-source">Meme.Cooking listing metadata · {listingResult?.source === "meme.cooking" ? "live feed" : listingResult?.source === "sync_snapshot" ? "sync snapshot" : "cached listing"}{listingResult?.stale ? " · may be outdated" : ""}</p>}{placeholder && <p className="registry-test-record-note">Placeholder test data · this registry record does not identify a real token contract.</p>}<div className="passport-identity-network"><span>Network</span><b>{current.value.token.identity.network_id}</b></div></div><div className="passport-registry-status"><Badge variant={placeholder ? "warning" : "success"}>{placeholder ? "Placeholder test record" : "Registered on MemeProof"}</Badge><p>A registry entry exists for this identity. Registration is not an official verification or verdict.</p></div><div className="passport-identifiers registry-passport-identifiers"><div className="passport-copy"><span><small>Token contract address</small><code title={current.value.token.identity.token_contract_address}>{current.value.token.identity.token_contract_address}</code></span><RegistryCopy value={current.value.token.identity.token_contract_address} /></div><div className="passport-copy"><span><small>Registrant</small><code title={current.value.token.registrant}>{current.value.token.registrant}</code></span></div><div className="passport-copy"><span><small>Registered</small><code>{formatNsDate(current.value.token.created_at_ns)}</code></span></div></div></Card><TokenAccountability records={current.value.records!} /></div>;
+
+  if (current?.error) {
+    return (
+      <section className="registry-dossier-state">
+        <ErrorState error={current.error} onRetry={retryRead} />
+      </section>
+    );
+  }
+  if (!current?.value) {
+    return <section className="registry-dossier-state"><LoadingState>Reading the public registry record…</LoadingState></section>;
+  }
+  if (!current.value.token) {
+    return (
+      <section className="registry-dossier-state">
+        <div className="dossier-empty">
+          <span className="dossier-empty-mark" aria-hidden="true">—</span>
+          <h1>Registry record not found</h1>
+          <p>There is no token with registry ID <code>{tokenRecordId}</code> in the configured NEAR testnet registry.</p>
+          <Link className="dossier-link" href="/passport">Return to all passports</Link>
+        </div>
+      </section>
+    );
+  }
+
+  const token = current.value.token;
+  const records = current.value.records!;
+  const associatedListing = listingResult?.tokenId === String(token.id) ? listingResult.record : null;
+
+  return (
+    <RegistryPassportPresentation
+      token={token}
+      records={records}
+      listing={associatedListing}
+      listingSource={listingResult?.source}
+      listingStale={listingResult?.stale ?? false}
+    />
+  );
+}
+
+export function RegistryPassportPresentation({
+  token,
+  records,
+  listing,
+  listingSource,
+  listingStale = false,
+}: {
+  token: TokenRecord;
+  records: TokenPassportRecords;
+  listing: DiscoverTokenRecord | null;
+  listingSource?: string;
+  listingStale?: boolean;
+}) {
+  const placeholder = isPlaceholderToken(token);
+  const tokenName = listingText(listing, "name");
+  const tokenSymbol = listingText(listing, "symbol");
+  const ticker = tokenSymbol
+    ? tokenSymbol.startsWith("$") ? tokenSymbol : "$" + tokenSymbol
+    : null;
+
+  return (
+    <main className="registry-dossier">
+      <nav className="dossier-breadcrumb" aria-label="Breadcrumb">
+        <Link href="/passport">All passports</Link>
+        <span aria-hidden="true">/</span>
+        <span aria-current="page">Token passport</span>
+        <Link className="dossier-return-link" href="/passport">Return to registry index</Link>
+      </nav>
+
+      <header className="dossier-identity">
+        <div className="dossier-identity-overline">
+          <span>Public registry record</span>
+          <div className="dossier-identity-status">
+            <span className={"dossier-network-tag " + (placeholder ? "is-placeholder" : "")}>
+              {token.identity.network_id}
+            </span>
+            <Badge variant={placeholder ? "warning" : "success"}>
+              {placeholder ? "Placeholder record" : "Registered"}
+            </Badge>
+          </div>
+        </div>
+
+        <div className="dossier-identity-main">
+          <TokenImage
+            className="dossier-token-logo"
+            value={listing}
+            name={tokenName ?? "Token"}
+            width={80}
+            height={80}
+          />
+          <div className="dossier-identity-copy">
+            <h1>{tokenName ?? "Token identity"}</h1>
+            <div className="dossier-identity-tags">
+              {ticker && <span className="dossier-token-ticker">{ticker}</span>}
+              <span className="dossier-registry-id">Registry ID <code>#{String(token.id)}</code></span>
+            </div>
+            {listing && (
+              <p className="dossier-metadata-source">
+                Meme.Cooking listing metadata
+                <span>{listingSource === "meme.cooking" ? "Live feed" : listingSource === "sync_snapshot" ? "Sync snapshot" : listingSource === "fixture" ? "Fixture data" : "Cached listing"}{listingStale ? " · may be outdated" : ""}</span>
+              </p>
+            )}
+          </div>
+        </div>
+
+        {placeholder && (
+          <p className="dossier-placeholder-note">
+            Placeholder test record. This entry does not identify a real token contract.
+          </p>
+        )}
+      </header>
+
+      <section className="dossier-registration" aria-labelledby="registration-heading">
+        <div className="dossier-section-heading">
+          <div>
+            <span className="dossier-section-index">01</span>
+            <h2 id="registration-heading">Registration record</h2>
+          </div>
+          <span className="dossier-section-note">Identity confirmed on NEAR testnet</span>
+        </div>
+
+        <dl className="dossier-registration-grid">
+          <div className="dossier-registration-address">
+            <dt>Token contract address</dt>
+            <dd>
+              <code title={token.identity.token_contract_address}>{token.identity.token_contract_address}</code>
+              <RegistryCopy value={token.identity.token_contract_address} />
+            </dd>
+          </div>
+          <div>
+            <dt>Network</dt>
+            <dd><span className="dossier-network-value">{token.identity.network_id}</span></dd>
+          </div>
+          <div>
+            <dt>Registrant</dt>
+            <dd><code>{token.registrant}</code></dd>
+          </div>
+          <div>
+            <dt>Registered</dt>
+            <dd>{formatNsDate(token.created_at_ns)}</dd>
+          </div>
+          <div>
+            <dt>Registry ID</dt>
+            <dd><code>#{String(token.id)}</code></dd>
+          </div>
+        </dl>
+
+        <p className="dossier-disclaimer">
+          Registration records a token identity and its registrant. It is not an official endorsement,
+          verification, or verdict about the token.
+        </p>
+      </section>
+
+      <TokenAccountability records={records} />
+    </main>
+  );
 }
 
 export function TokenAccountability({ records }: { records: TokenPassportRecords }) {
-  return <>
-    <section className="passport-section"><div className="passport-section-heading"><div><span className="eyebrow">MEMEPROOF COMMITMENTS</span><h2>Recorded commitments</h2></div></div>{records.commitments.length ? records.commitments.map(({ record, versions, evidence }) => <Card className="registry-passport-card" id={`commitment-${record.commitment.id}`} key={String(record.commitment.id)}><div className="registry-record-heading"><div><span className="eyebrow">COMMITMENT #{String(record.commitment.id)} · VERSION {record.current_version.version}</span><h3>{record.current_version.title}</h3></div><Badge variant="neutral">Record only</Badge></div><p className="registry-commitment-description">{record.current_version.description}</p><div className="registry-criteria"><b>Success criteria recorded</b><p>{record.current_version.criteria}</p></div><div className="registry-record-meta"><span>Creator: {record.commitment.creator}</span><span>Created: {formatNsDate(record.commitment.created_at_ns)}</span><span>Current deadline: {formatNsDate(record.current_version.deadline_at_ns)}</span><span>Current version recorded: {formatNsDate(record.current_version.created_at_ns)}</span></div>{versions.length > 1 && <details className="registry-version-history"><summary>Version timeline · {versions.length} recorded versions</summary><div className="registry-version-timeline">{[...versions].sort((a, b) => a.version - b.version).map((version) => <article className={version.version === record.current_version.version ? "is-current" : ""} key={version.version}><i aria-hidden="true"/><div><div className="registry-version-title"><b>Version {version.version} · {version.title}</b>{version.version === record.current_version.version && <span>Current</span>}</div><small>Recorded {formatNsDate(version.created_at_ns)} · Deadline {formatNsDate(version.deadline_at_ns)}</small><p>{version.description}</p><small>Criteria: {version.criteria}</small></div></article>)}</div></details>}<p className="registry-note">A deadline passing does not set a final outcome. Community reviews are opinions, and disputes are tracked separately.</p>{evidence.length > 0 && <div className="registry-nested-records"><h4>Evidence records</h4>{evidence.map(({ record: item, reviews }) => <div className="registry-evidence" id={`evidence-${item.id}`} key={String(item.id)}><div className="registry-record-heading"><b>Evidence #{String(item.id)} · version {item.version}</b><small>{formatNsDate(item.submitted_at_ns)}</small></div><p>Submitted by {item.submitter}</p><p>Reference: <code>{item.reference}</code></p><p>Content hash: <code>{item.content_hash}</code></p><div className="registry-review-list"><b>Community reviews ({reviews.length})</b>{reviews.length ? reviews.map((review) => <article id={`review-${review.id}`} key={String(review.id)}><span>Review #{String(review.id)} · {review.outcome}</span><small>By {review.reviewer} · {formatNsDate(review.submitted_at_ns)}</small><p>{review.explanation}</p></article>) : <p className="registry-note">No community reviews recorded for this evidence.</p>}<small className="registry-note">Community reviews are attributed opinions; they do not determine a final verdict.</small></div></div>)}</div>}{records.disputes.some(({ record: dispute }) => String(dispute.commitment_id) === String(record.commitment.id)) && <div className="registry-related-links">{records.disputes.filter(({ record: dispute }) => String(dispute.commitment_id) === String(record.commitment.id)).map(({ record: dispute }) => <a key={`dispute-${dispute.id}`} href={`#dispute-${dispute.id}`}>Open dispute #{String(dispute.id)} ↓</a>)}</div>}</Card>) : <Card className="registry-passport-card registry-empty-accountability"><div className="registry-state"><span className="registry-empty-mark" aria-hidden="true">○</span><b>No commitments recorded</b><span>The registry currently has no recorded commitments for this token.</span></div></Card>}</section>
-    <section className="passport-section"><div className="passport-section-heading"><div><span className="eyebrow">MEMEPROOF DISPUTES</span><h2>Dispute history</h2></div></div>{records.disputes.length ? <div className="registry-dispute-list">{records.disputes.map(({ record, resolution }) => <Card className="registry-passport-card" id={`dispute-${record.id}`} key={String(record.id)}><div className="registry-record-heading"><div><span className="eyebrow">DISPUTE #{String(record.id)}</span><h3>Commitment #{String(record.commitment_id)}{record.evidence_id !== null ? ` · Evidence #${String(record.evidence_id)}` : ""}</h3></div><Badge variant={record.status === "resolved" ? "info" : record.status === "expired" ? "warning" : "neutral"}>{disputeStatus(record.status)}</Badge></div><p>{record.reason}</p><div className="registry-record-meta"><span>Opened by: {record.opener}</span><span>Created: {formatNsDate(record.created_at_ns)}</span></div>{resolution ? <div className="registry-criteria"><b>Resolution: {resolution.disposition}</b><p>{resolution.rationale}</p><small>Resolved by {resolution.resolver} · {formatNsDate(resolution.resolved_at_ns)}</small></div> : record.status === "resolved" ? <p className="registry-note">The dispute record is resolved, but no resolution detail was returned.</p> : <p className="registry-note">Current contract status: {disputeStatus(record.status)}. No resolution is recorded.</p>}</Card>)}</div> : <Card className="registry-passport-card registry-empty-accountability"><div className="registry-state"><span className="registry-empty-mark" aria-hidden="true">○</span><b>No disputes recorded</b><span>Disputes opened for this token&apos;s commitments or evidence will appear here.</span></div></Card>}</section>
-  </>;
+  return (
+    <div className="dossier-history">
+      <section className="dossier-section" aria-labelledby="commitments-heading">
+        <div className="dossier-section-heading">
+          <div>
+            <span className="dossier-section-index">02</span>
+            <h2 id="commitments-heading">Commitment history</h2>
+          </div>
+          <span className="dossier-section-note">
+            {records.commitments.length} {records.commitments.length === 1 ? "public record" : "public records"}
+          </span>
+        </div>
+
+        {records.commitments.length ? (
+          <div className="dossier-commitment-list">
+            {records.commitments.map(({ record, versions, evidence }) => (
+              <article className="dossier-commitment" id={"commitment-" + record.commitment.id} key={String(record.commitment.id)}>
+                <div className="dossier-record-overline">
+                  <span className="dossier-record-id">Commitment <code>#{String(record.commitment.id)}</code></span>
+                  <span className="dossier-record-version">Current version <b>{record.current_version.version}</b></span>
+                  <Badge variant="neutral">Record only</Badge>
+                </div>
+
+                <h3>{record.current_version.title}</h3>
+                <p className="dossier-description">{record.current_version.description}</p>
+
+                <section className="dossier-criteria" aria-label="Success criteria">
+                  <h4>Success criteria</h4>
+                  <p>{record.current_version.criteria}</p>
+                </section>
+
+                <dl className="dossier-commitment-facts">
+                  <div><dt>Creator</dt><dd><code>{record.commitment.creator}</code></dd></div>
+                  <div><dt>Created</dt><dd>{formatNsDate(record.commitment.created_at_ns)}</dd></div>
+                  <div><dt>Deadline</dt><dd>{formatNsDate(record.current_version.deadline_at_ns)}</dd></div>
+                  <div><dt>Version recorded</dt><dd>{formatNsDate(record.current_version.created_at_ns)}</dd></div>
+                </dl>
+
+                {versions.length > 1 && (
+                  <details className="dossier-version-history">
+                    <summary>
+                      <span>Version history</span>
+                      <span>{versions.length} versions</span>
+                    </summary>
+                    <ol className="dossier-version-list">
+                      {[...versions].sort((a, b) => a.version - b.version).map((version) => (
+                        <li className={version.version === record.current_version.version ? "is-current" : ""} key={version.version}>
+                          <div className="dossier-version-number">V{version.version}</div>
+                          <div className="dossier-version-copy">
+                            <div className="dossier-version-title">
+                              <b>{version.title}</b>
+                              {version.version === record.current_version.version && <span>Current</span>}
+                            </div>
+                            <small>Recorded {formatNsDate(version.created_at_ns)} · Deadline {formatNsDate(version.deadline_at_ns)}</small>
+                            <p>{version.description}</p>
+                            <div className="dossier-version-criteria"><b>Criteria</b><span>{version.criteria}</span></div>
+                          </div>
+                        </li>
+                      ))}
+                    </ol>
+                  </details>
+                )}
+
+                <section className="dossier-evidence-section" aria-label="Evidence and community reviews">
+                  <div className="dossier-related-heading">
+                    <h4>Evidence and community reviews</h4>
+                    <span>{evidence.length} {evidence.length === 1 ? "record" : "records"}</span>
+                  </div>
+                  {evidence.length ? (
+                    <div className="dossier-evidence-list">
+                      {evidence.map(({ record: item, reviews }) => (
+                        <article className="dossier-evidence" id={"evidence-" + item.id} key={String(item.id)}>
+                          <div className="dossier-evidence-heading">
+                            <div>
+                              <span>Evidence <code>#{String(item.id)}</code> · Version {item.version}</span>
+                              <small>Submitted {formatNsDate(item.submitted_at_ns)}</small>
+                            </div>
+                            <Badge variant="info">{reviews.length} {reviews.length === 1 ? "review" : "reviews"}</Badge>
+                          </div>
+                          <dl className="dossier-evidence-facts">
+                            <div><dt>Submitter</dt><dd><code>{item.submitter}</code></dd></div>
+                            <div><dt>Reference</dt><dd><code>{item.reference}</code></dd></div>
+                            <div className="dossier-hash"><dt>Content hash</dt><dd><code>{item.content_hash}</code></dd></div>
+                          </dl>
+                          {reviews.length ? (
+                            <div className="dossier-review-list">
+                              {reviews.map((review) => (
+                                <article className="dossier-review" id={"review-" + review.id} key={String(review.id)}>
+                                  <div className="dossier-review-heading">
+                                    <div>
+                                      <Badge variant={review.outcome === "supports" ? "success" : review.outcome === "challenges" ? "warning" : "neutral"}>
+                                        {review.outcome}
+                                      </Badge>
+                                      <span>Review <code>#{String(review.id)}</code></span>
+                                    </div>
+                                    <small>By <code>{review.reviewer}</code> · {formatNsDate(review.submitted_at_ns)}</small>
+                                  </div>
+                                  <p>{review.explanation}</p>
+                                </article>
+                              ))}
+                            </div>
+                          ) : (
+                            <p className="dossier-nested-empty">No community reviews have been recorded for this evidence.</p>
+                          )}
+                        </article>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="dossier-nested-empty">No evidence has been attached to this commitment.</p>
+                  )}
+                </section>
+
+                <p className="dossier-integrity-note">
+                  A deadline passing does not set a final outcome. Community reviews are attributed opinions; disputes are tracked separately.
+                </p>
+              </article>
+            ))}
+          </div>
+        ) : (
+          <DossierEmpty
+            label="Commitment register"
+            title="No commitment has been recorded yet"
+            description="No commitment creation event for this token is recorded in the NEAR testnet registry."
+          />
+        )}
+      </section>
+
+      <section className="dossier-section dossier-disputes" aria-labelledby="disputes-heading">
+        <div className="dossier-section-heading">
+          <div>
+            <span className="dossier-section-index">03</span>
+            <h2 id="disputes-heading">Dispute history</h2>
+          </div>
+          <span className="dossier-section-note">
+            {records.disputes.length} {records.disputes.length === 1 ? "public record" : "public records"}
+          </span>
+        </div>
+
+        {records.disputes.length ? (
+          <div className="dossier-dispute-list">
+            {records.disputes.map(({ record, resolution }) => (
+              <article className="dossier-dispute" id={"dispute-" + record.id} key={String(record.id)}>
+                <div className="dossier-record-overline">
+                  <span className="dossier-record-id">Dispute <code>#{String(record.id)}</code></span>
+                  <Badge variant={record.status === "resolved" ? "success" : record.status === "expired" ? "warning" : "neutral"}>
+                    {disputeStatus(record.status)}
+                  </Badge>
+                </div>
+                <h3>
+                  Commitment <code>#{String(record.commitment_id)}</code>
+                  {record.evidence_id !== null && <> · Evidence <code>#{String(record.evidence_id)}</code></>}
+                </h3>
+                <section className="dossier-criteria" aria-label="Dispute reason">
+                  <h4>Reason</h4>
+                  <p>{record.reason}</p>
+                </section>
+                <dl className="dossier-dispute-facts">
+                  <div><dt>Opened by</dt><dd><code>{record.opener}</code></dd></div>
+                  <div><dt>Created</dt><dd>{formatNsDate(record.created_at_ns)}</dd></div>
+                </dl>
+                {resolution ? (
+                  <section className="dossier-resolution">
+                    <div><span>Resolution</span><b>{resolution.disposition}</b></div>
+                    <p>{resolution.rationale}</p>
+                    <small>Resolved by <code>{resolution.resolver}</code> · {formatNsDate(resolution.resolved_at_ns)}</small>
+                  </section>
+                ) : (
+                  <p className="dossier-integrity-note">No resolution has been recorded.</p>
+                )}
+              </article>
+            ))}
+          </div>
+        ) : (
+          <DossierEmpty
+            label="Dispute register"
+            title="No disputes recorded"
+            description="If a dispute is opened for one of this token’s commitments or its evidence, the record and any resolution will appear here."
+          />
+        )}
+      </section>
+    </div>
+  );
+}
+
+function DossierEmpty({ label, title, description }: { label: string; title: string; description: string }) {
+  return (
+    <div className="dossier-empty">
+      <span className="dossier-empty-mark" aria-hidden="true">—</span>
+      <span className="dossier-empty-label">{label}</span>
+      <h3>{title}</h3>
+      <p>{description}</p>
+    </div>
+  );
 }
 
 function disputeStatus(status: string): string {
