@@ -257,9 +257,6 @@ export function RegistryPassportPresentation({
         <div className="dossier-identity-overline">
           <span>Public registry record</span>
           <div className="dossier-identity-status">
-            <span className={"dossier-network-tag " + (placeholder ? "is-placeholder" : "")}>
-              {token.identity.network_id}
-            </span>
             <Badge variant={placeholder ? "warning" : "success"}>
               {placeholder ? "Placeholder record" : "Registered"}
             </Badge>
